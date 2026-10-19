@@ -1,0 +1,36 @@
+{
+  "name": "investbrick",
+  "version": "0.6.0",
+  "private": true,
+  "type": "module",
+  "description": "InvestBrick paper-trading platform (Phase 5: deployment-ready)",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node --test --test-force-exit \"test/*.test.js\"",
+    "smoke": "node scripts/smoke.js",
+    "migrate": "node scripts/migrate.js",
+    "dev:local": "node --watch scripts/dev-local.js",
+    "test:pg": "node scripts/test-pg.js",
+    "verify:deploy": "node scripts/verify-deploy.js"
+  },
+  "dependencies": {
+    "@neon/config": "^1.9.2",
+    "@neon/env": "^1.6.3",
+    "argon2": "^0.45.1",
+    "compression": "^1.8.2",
+    "dotenv": "^18.0.8",
+    "express": "^5.3.0",
+    "express-rate-limit": "^8.7.1",
+    "helmet": "^8.3.0",
+    "nodemailer": "^10.1.2",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.10",
+    "embedded-postgres": "^18.4.0-beta.17"
+  }
+}

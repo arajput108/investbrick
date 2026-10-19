@@ -1,0 +1,40 @@
+# Render Blueprint: one always-on web service. Create it from the Render dashboard: New > Blueprint > pick your repo.
+# Secrets are NOT stored here (sync: false means Render asks you for them in the dashboard).
+services:
+  - type: web
+    name: investbrick
+    runtime: node
+    plan: starter                 # always-on (~US$7/month; confirm on render.com/pricing). The free plan sleeps, which would stop limit-order matching.
+    region: singapore             # closest Render region to India; change if you prefer
+    numInstances: 1               # the matcher is safe with more (database lease), but 1 is simplest and cheapest
+    buildCommand: npm ci --omit=dev
+    startCommand: node server/index.js
+    healthCheckPath: /healthz     # does not touch the database, so it never keeps Neon awake
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 22
+      - key: TRUST_PROXY
+        value: "1"
+      - key: DB_DRIVER
+        value: pg
+      - key: EMAIL_PROVIDER
+        value: smtp
+      - key: DATABASE_URL         # Neon connection string (looks like postgresql://...neon.tech/...?sslmode=require)
+        sync: false
+      - key: APP_URL              # your public address, e.g. https://investbrick.onrender.com or https://www.yourdomain.com
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: COINGECKO_API_KEY    # free "Demo" key from coingecko.com (optional but recommended)
+        sync: false

@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>InvestBrick account</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Unbounded:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/auth.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <a class="brand" href="/" aria-label="InvestBrick home">
+      <svg viewBox="0 0 28 28" aria-hidden="true"><rect x="13" y="1" width="2" height="26" rx="1" fill="#8b5cf6"/><rect x="6" y="5" width="16" height="6" rx="1.6" fill="#5fe3f0"/><rect x="4" y="12" width="12" height="6" rx="1.6" fill="#5fe3f0" opacity=".75"/><rect x="17" y="12" width="7" height="6" rx="1.6" fill="#5fe3f0" opacity=".75"/><rect x="6" y="19" width="16" height="6" rx="1.6" fill="#5fe3f0" opacity=".5"/></svg>
+      InvestBrick
+    </a>
+    <div class="pitch">
+      <h1>Build your portfolio before you risk a rupee.</h1>
+      <p>Practise investing, trading and crypto with ₹10,00,000 of virtual cash. Paper orders only: nothing here touches real money or a real broker.</p>
+    </div>
+    <ul class="facts"><li><b>₹10,00,000</b>virtual cash</li><li><b>₹0</b>brokerage</li><li><b>NSE + crypto</b>real market prices</li></ul>
+    <svg class="candles" viewBox="0 0 600 220" preserveAspectRatio="none" aria-hidden="true">
+      <g stroke-width="2" stroke-linecap="round">
+        <g stroke="#5fe3f0"><path d="M30 150v50M60 130v60M120 100v70M180 90v60M240 60v80M330 70v60M390 40v70M450 30v60M510 20v50"/></g>
+        <g stroke="#8b5cf6"><path d="M90 140v50M150 120v50M210 90v50M270 80v60M300 90v60M360 60v60M420 50v70M480 40v60M550 20v60"/></g>
+      </g>
+      <g fill="#5fe3f0"><rect x="24" y="160" width="12" height="28"/><rect x="114" y="115" width="12" height="40"/><rect x="234" y="75" width="12" height="46"/><rect x="384" y="55" width="12" height="38"/><rect x="504" y="30" width="12" height="28"/></g>
+      <g fill="#8b5cf6"><rect x="54" y="140" width="12" height="36"/><rect x="144" y="130" width="12" height="30"/><rect x="204" y="100" width="12" height="32"/><rect x="294" y="100" width="12" height="38"/><rect x="474" y="55" width="12" height="30"/></g>
+    </svg>
+  </aside>
+
+  <main class="main">
+    <div class="card">
+      <div id="banner" role="alert" hidden></div>
+
+      <!-- LOGIN -->
+      <section id="v-login" hidden>
+        <h2>Welcome back</h2><p class="sub">Log in to your paper-trading account.</p>
+        <form id="f-login" novalidate>
+          <div id="e-form-login" role="alert"></div>
+          <div class="field"><label for="l-email">Email</label><input id="l-email" name="email" type="email" autocomplete="username" inputmode="email" autocapitalize="none" spellcheck="false" required><div class="err" data-for="email"></div></div>
+          <div class="field"><label for="l-pw">Password</label><div class="inp"><input id="l-pw" name="password" type="password" autocomplete="current-password" required><button class="eye" type="button" data-eye="l-pw" aria-label="Show password">Show</button></div><div class="err" data-for="password"></div></div>
+          <div class="row"><span></span><a href="/forgot-password">Forgot password?</a></div>
+          <button class="btn" type="submit"><span class="lbl">Log in</span></button>
+        </form>
+        <p class="alt">New to InvestBrick? <a href="/register">Create an account</a></p>
+        <a class="guest" href="/">Continue as guest (saved in this browser only)</a>
+      </section>
+
+      <!-- REGISTER -->
+      <section id="v-register" hidden>
+        <h2>Create your account</h2><p class="sub">Free, and you start with ₹10,00,000 in virtual cash.</p>
+        <form id="f-register" novalidate>
+          <div id="e-form-register" role="alert"></div>
+          <div class="field"><label for="r-name">Your name</label><input id="r-name" name="name" type="text" autocomplete="name" maxlength="60" required><div class="err" data-for="name"></div></div>
+          <div class="field"><label for="r-email">Email</label><input id="r-email" name="email" type="email" autocomplete="email" inputmode="email" autocapitalize="none" spellcheck="false" required><div class="err" data-for="email"></div></div>
+          <div class="field"><label for="r-pw">Password</label><div class="inp"><input id="r-pw" name="password" type="password" autocomplete="new-password" aria-describedby="r-hint" required><button class="eye" type="button" data-eye="r-pw" aria-label="Show password">Show</button></div>
+            <div class="meter" id="meter" data-s="0" aria-hidden="true"><i></i><i></i><i></i><i></i></div><div class="hint" id="r-hint">At least 10 characters. A few random words work well.</div><div class="err" data-for="password"></div></div>
+          <button class="btn" type="submit"><span class="lbl">Create account</span></button>
+        </form>
+        <p class="alt">Already registered? <a href="/login">Log in</a></p>
+        <p class="note">Your paper portfolio is saved to your account, so it is there when you log in on any device.</p>
+      </section>
+
+      <!-- FORGOT -->
+      <section id="v-forgot" hidden>
+        <h2>Reset your password</h2><p class="sub">Enter your email and we will send you a link to choose a new password.</p>
+        <form id="f-forgot" novalidate>
+          <div id="e-form-forgot" role="alert"></div>
+          <div class="field"><label for="f-email">Email</label><input id="f-email" name="email" type="email" autocomplete="email" inputmode="email" autocapitalize="none" spellcheck="false" required><div class="err" data-for="email"></div></div>
+          <button class="btn" type="submit"><span class="lbl">Send reset link</span></button>
+        </form>
+        <p class="alt"><a href="/login">Back to log in</a></p>
+      </section>
+
+      <!-- RESET -->
+      <section id="v-reset" hidden>
+        <h2>Choose a new password</h2><p class="sub">You will be signed out everywhere else.</p>
+        <form id="f-reset" novalidate>
+          <div id="e-form-reset" role="alert"></div>
+          <div class="field"><label for="x-pw">New password</label><div class="inp"><input id="x-pw" name="password" type="password" autocomplete="new-password" required><button class="eye" type="button" data-eye="x-pw" aria-label="Show password">Show</button></div>
+            <div class="meter" id="meter2" data-s="0" aria-hidden="true"><i></i><i></i><i></i><i></i></div><div class="hint">At least 10 characters.</div><div class="err" data-for="password"></div></div>
+          <button class="btn" type="submit"><span class="lbl">Update password</span></button>
+        </form>
+        <p class="alt"><a href="/forgot-password">Request a new link</a></p>
+      </section>
+    </div>
+  </main>
+</div>
+<script src="/auth.js"></script>
+</body>
+</html>
