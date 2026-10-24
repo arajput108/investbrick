@@ -4,7 +4,9 @@ export async function getJson(fetchImpl, url, { headers = {}, timeoutMs = 8000 }
   try {
     const res = await fetchImpl(url, { headers: { accept: 'application/json', ...headers }, signal: ctl.signal });
     if (!res.ok) {
-      const e = new Error(`upstream HTTP ${res.status}`); e.status = res.status; throw e;
+      const e = new Error(`upstream HTTP ${res.status}`); e.status = res.status;
+      const ra = Number(res.headers?.get?.('retry-after')); if (Number.isFinite(ra) && ra > 0) e.retryAfterMs = Math.min(ra, 900) * 1000;   // seconds -> ms, capped at 15 min
+      throw e;
     }
     return await res.json();
   } catch (e) {

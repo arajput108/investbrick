@@ -37,4 +37,6 @@ export class Breaker {
   get isOpen() { return this.now() < this.openUntil; }
   ok() { this.fails = 0; this.openUntil = 0; }
   fail() { if (++this.fails >= this.threshold) this.openUntil = this.now() + this.cooldownMs; }
+  /** Provider told us to back off (HTTP 429 / Retry-After): pause immediately for at least that long. */
+  trip(ms) { this.fails = this.threshold; this.openUntil = Math.max(this.openUntil, this.now() + Math.max(ms || 0, this.cooldownMs)); }
 }

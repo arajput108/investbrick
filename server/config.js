@@ -17,6 +17,8 @@ export const config = {
     driver: env.DB_DRIVER || 'pg',          // 'pg' (Postgres/Neon) or 'pglite' (dev-only, zero setup)
     url: env.DATABASE_URL || '',
     pgliteDir: env.PGLITE_DIR || '.data/pglite',
+    poolMax: Math.min(Math.max(int(env.DB_POOL_MAX, 10), 2), 50),
+    statementTimeoutMs: Math.max(1000, int(env.DB_STATEMENT_TIMEOUT_MS, 20000)),
   },
   email: {
     // 'none' = no email service: sign-up and login work, password reset by email reports itself as unavailable (never pretends to send).

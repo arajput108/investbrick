@@ -38,11 +38,11 @@ export function fakeMarket(prices = {}) {
     quotes: async (syms = []) => { if (st.throwAll) throw new Error('feed down'); const quotes = {}, errors = {}; for (const s of syms) { const q = quote(s); if (q) quotes[s] = q; else errors[s] = 'no data'; } return { quotes, errors }; } };
 }
 
-export async function makeStack(db, { market = fakeMarket(), isProd = false, rateLimits, portfolioLimits, snapshotEveryMs, orderTtlDays, now, onOrderOpened } = {}) {
+export async function makeStack(db, { market = fakeMarket(), isProd = false, rateLimits, portfolioLimits, snapshotEveryMs, orderTtlDays, now, onOrderOpened, serviceOpts = {} } = {}) {
   const config = { isProd, trustProxy: 0, apiLimit: 1e6, appUrl: 'https://investbrick.example', auth: {},
     rateLimits: rateLimits || { loginIp: 1e6, loginAcct: 1e6, register: 1e6, forgot: 1e6, reset: 1e6, change: 1e6 },
     portfolioLimits: portfolioLimits || { general: 1e6, orders: 1e6 } };
-  const portfolio = createPortfolioService({ db, market, snapshotEveryMs, orderTtlDays, ...(now ? { now } : {}), ...(onOrderOpened ? { onOrderOpened } : {}) });
+  const portfolio = createPortfolioService({ db, market, snapshotEveryMs, orderTtlDays, ...(now ? { now } : {}), ...(onOrderOpened ? { onOrderOpened } : {}), ...serviceOpts });
   const mailer = createMailer({ provider: 'smtp', from: 'IB <a@b.c>', transport: { sendMail: async () => {} } });
   const service = createAuthService({ db, config, mailer, passwords: createPasswords({ memoryCost: 1024, timeCost: 1 }), onUserCreated: (t, id) => portfolio.ensurePortfolio(t, id) });
   const auth = createAuth({ service, config });

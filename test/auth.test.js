@@ -354,3 +354,20 @@ test('password reset end to end through the Brevo API provider: token link built
     assert.equal((await client(base).api('POST', '/api/auth/login', { email, password: GOOD })).status, 401);
   } finally { server.close(); server.closeAllConnections(); }
 });
+
+test('lockout cannot be dodged by parallel guesses: the failed-login counter is atomic', async () => {
+  // A barrier inside verify() makes every guess read the user row BEFORE any guess writes its failure: the exact interleaving that a
+  // read-then-write counter loses (all would write "1 failure" and the account would never lock).
+  const real = createPasswords({ memoryCost: 1024, timeCost: 1 });
+  const N = 8; let arrived = 0, release; const gate = new Promise((r) => { release = r; });
+  const passwords = { ...real, verify: async (...a) => { if (++arrived === N) release(); await gate; return real.verify(...a); } };
+  const config = { appUrl: 'https://investbrick.example', auth: { maxFailedLogins: 5, lockMinutes: 15 } };
+  const service = createAuthService({ db, config, mailer: createMailer({ provider: 'none', isProd: true }), passwords: real });
+  const email = uniq(); await service.register({ email, name: 'Asha Rao', password: GOOD });
+  const racing = createAuthService({ db, config, mailer: createMailer({ provider: 'none', isProd: true }), passwords });
+  const results = await Promise.allSettled(Array.from({ length: N }, () => racing.login({ email, password: 'Wrong-Guess-123456' })));
+  assert.ok(results.every((r) => r.status === 'rejected'));
+  const row = (await db.query('select locked_until from users where email=$1', [email])).rows[0];
+  assert.ok(row.locked_until && new Date(row.locked_until) > new Date(), 'account must be locked after 8 parallel failures with a limit of 5');
+  await assert.rejects(service.login({ email, password: GOOD }));            // even the right password is refused while locked
+});

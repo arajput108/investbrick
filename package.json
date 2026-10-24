@@ -13,6 +13,7 @@
     "test": "node --test --test-force-exit \"test/*.test.js\"",
     "smoke": "node scripts/smoke.js",
     "migrate": "node scripts/migrate.js",
+    "migrate:down": "node scripts/migrate.js --down",
     "dev:local": "node --watch scripts/dev-local.js",
     "test:pg": "node scripts/test-pg.js",
     "verify:deploy": "node scripts/verify-deploy.js"

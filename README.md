@@ -156,7 +156,7 @@ Nothing to install. Start the server (or `npm run migrate`) and migration 003 ap
 `GET /api/portfolio/orders?status=&limit=` and `GET /api/portfolio/orders/:id/events` (owner only). The portfolio response also includes `orderLog`.
 
 ### Tests
-`npm test` runs 91 tests on PGlite; `npm run test:pg` runs portfolio and engine suites on a real PostgreSQL. New engine tests cover: background fill with no browser, market closed/reopen, feed failure (throws, missing, stale, frozen, outlier) and recovery, concurrent ticks and reads, cancel-versus-fill races, overspend and tampered-state rejection, expiry, restart simulation, matcher loop survival and status, two matchers, overlap guard, audit immutability, owner-only APIs, and 3-user randomized load with exact ledger checks.
+`npm test` runs 103 tests (162 on real PostgreSQL) on PGlite; `npm run test:pg` runs portfolio and engine suites on a real PostgreSQL. New engine tests cover: background fill with no browser, market closed/reopen, feed failure (throws, missing, stale, frozen, outlier) and recovery, concurrent ticks and reads, cancel-versus-fill races, overspend and tampered-state rejection, expiry, restart simulation, matcher loop survival and status, two matchers, overlap guard, audit immutability, owner-only APIs, and 3-user randomized load with exact ledger checks.
 
 ### Remaining limitations
 - Prices for NSE are delayed (~15 min) and unofficial (Yahoo); the live feeds, email and Neon were not reachable from my test sandbox. Please run `npm run smoke` and watch the server log yourself.
@@ -302,3 +302,18 @@ npm run verify:deploy -- https://YOUR-SITE --full --reset-email=you@gmail.com
 - Free hosting: limit orders are unreliable while the server sleeps (the scheduled wake-up narrows but does not close the gap), and password reset is unavailable without a Brevo API key.
 - **Verification status.** Tested locally and against a real PostgreSQL server: everything in `npm test` and `npm run test:pg`, including the Brevo-API request shape and the whole reset flow against a mock HTTP server, and the secured wake-up endpoint on a real server process. **Not verified on any real service:** Brevo's live API, Render, Neon, GitHub Actions scheduling, Yahoo and CoinGecko. Do not treat password recovery or deployment as working until you have run `npm run verify:deploy` and received a real reset email.
 - Real-money trading does not exist and was not added.
+
+## Backend hardening (audit follow-up)
+
+Changes (all additive; no data is reset, no existing endpoint removed):
+- **Login lockout race fixed**: failed attempts are counted atomically in one SQL statement, so parallel guesses cannot dodge the 10-failure lock.
+- **Market data cannot stall trading**: portfolio/order paths give up on quotes after 4 s (matcher 30 s) and degrade to "price unavailable" instead of hanging. A provider 429 with `Retry-After` opens the circuit breaker for that long; a bad single symbol no longer trips the breaker.
+- **Database**: pool size (`DB_POOL_MAX`), statement and idle-in-transaction timeouts, keep-alive; `/readyz` DB check capped at 4 s.
+- **Migration 004** adds three indexes for paging; reversible with `npm run migrate:down -- --yes`. Old `engine_runs` (>30 days) are purged; the order audit trail never is.
+- **New/changed API**: `GET /api/portfolio/orders` is cursor-paginated (`limit`, `before`, returns `nextCursor`); new `GET /api/portfolio/transactions` (`limit`, `before`, `symbol`, `side`, `epoch`); new `POST /api/auth/delete-account` (password + `confirm: "DELETE"`).
+- **Performance**: measured on local real PostgreSQL (excludes Render cold start and Neon wake-up): portfolio read p50 ~8 ms, market order p50 ~15 ms. Query count trimmed slightly (16->15, 36->35); no further safe gains found, the app is not DB-bound.
+- **Backups**: see `docs/BACKUP_RECOVERY.md` and `scripts/backup.sh`.
+
+Safe deployment: (1) make a Neon branch or run `scripts/backup.sh`; (2) push to GitHub; (3) Render auto-deploys and applies migration 004 at boot; (4) check `/readyz`, then log in and open the portfolio; (5) delete the pre-deploy branch.
+
+Remaining risks: nothing here is verified against live Neon, Render, Brevo, Yahoo or CoinGecko; Yahoo is unofficial and may break; free hosting sleeps so limit orders fill only while awake or woken by the GitHub Actions ping; backups are manual; no CSRF token (Origin/Fetch-Metadata guard instead); no live-site load test.

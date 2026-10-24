@@ -98,5 +98,10 @@ export function createAuth({ service, config }) {
     res.json({ ok: true, message: 'Password updated. Other devices were signed out.' });
   }));
 
+  r.post('/delete-account', requireAuth, limit(L.change, L.hourMs), wrap(async (req, res) => {
+    await service.deleteAccount(req.user.id, req.body || {}); clearCookie(res);
+    res.json({ ok: true, message: 'Your account and all its data were deleted.' });
+  }));
+
   return { router: r, sessionLoader, requireAuth, guardUnsafe, cookieName };
 }

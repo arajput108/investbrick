@@ -3,7 +3,7 @@ import { log } from '../logger.js';
 // and on PGlite (real Postgres compiled to WASM) for zero-setup local dev and automated tests.
 // Interface: query(sql, params) -> {rows}; tx(fn) runs fn(client) in a transaction; exec(sql); close().
 
-export async function createDb({ driver = 'pg', url = '', pgliteDir = '', isProd = false } = {}) {
+export async function createDb({ driver = 'pg', url = '', pgliteDir = '', isProd = false, poolMax = 10, statementTimeoutMs = 20000, idleTxTimeoutMs = 30000 } = {}) {
   if (driver === 'pglite') {
     if (isProd) throw new Error('DB_DRIVER=pglite is for development and tests only. Use DATABASE_URL (Postgres) in production.');
     let PGlite;
@@ -20,7 +20,11 @@ export async function createDb({ driver = 'pg', url = '', pgliteDir = '', isProd
   }
   if (!url) throw new Error('DATABASE_URL is not set');
   const { default: pgPkg } = await import('pg');
-  const pool = new pgPkg.Pool({ connectionString: url, max: 10, idleTimeoutMillis: 30000, connectionTimeoutMillis: 10000 });
+  // Guard rails so one stuck query or an abandoned transaction can never hold row locks (and therefore a user's money) for long.
+  const pool = new pgPkg.Pool({
+    connectionString: url, max: poolMax, idleTimeoutMillis: 30000, connectionTimeoutMillis: 10000, keepAlive: true,
+    statement_timeout: statementTimeoutMs, idle_in_transaction_session_timeout: idleTxTimeoutMs, application_name: 'investbrick',
+  });
   pool.on('error', (e) => log.warn('db idle client error (connection will be replaced)', e));
   const wrap = (c) => ({ query: async (sql, params = []) => ({ rows: (await c.query(sql, params)).rows }), exec: (sql) => c.query(sql) });
   return {

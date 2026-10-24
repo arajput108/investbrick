@@ -61,6 +61,8 @@ export function createPortfolioService({
   tradeAgeMs = { equity: 45 * 60e3, crypto: 20 * 60e3 },     // how old the exchange's last trade time may be (NSE data is ~15 min delayed; older = frozen feed)
   maxMove = { equity: 0.4, crypto: 0.5 },                    // reject prices that jump further than this from the previous close (bad data)
   orderTtlDays = 30,
+  quoteDeadlineMs = 4000,            // request paths (orders, portfolio reads) never wait longer than this for market data
+  matcherQuoteDeadlineMs = 30000,    // the background matcher may wait longer; nobody is waiting on it
   onOrderOpened = () => {},                                   // lets the background matcher leave idle mode
 }) {
   const ge = async (t, a, b) => (await t.query('select ($1::numeric) >= ($2::numeric) as ok', [a, b])).rows[0].ok;
@@ -87,7 +89,17 @@ export function createPortfolioService({
   // ---------- audit trail (append-only table; written in the same transaction as the change it records) ----------
   const event = (t, { orderId, userId, type, actor = 'user', detail = {} }) =>
     t.query('insert into order_events (order_id, user_id, type, actor, detail) values ($1,$2,$3,$4,$5::jsonb)', [orderId, userId, type, actor, JSON.stringify(detail)]);
-  const quoteFor = async (syms) => (await market.quotes(syms)).quotes || {};
+  const quoteRaw = async (syms) => (await market.quotes(syms)).quotes || {};
+  const withDeadline = (p, ms, what) => new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${what} timed out after ${ms} ms`)), ms);
+    p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+  });
+  /** Quotes for a user-facing request. Never throws and never waits past the deadline: a slow or failing provider means "no price"
+   *  (orders are then refused or kept waiting, portfolio reads fall back to cost), not a hung request. The upstream call keeps running and fills the cache. */
+  const quoteFor = async (syms) => {
+    try { return await withDeadline(quoteRaw(syms), quoteDeadlineMs, 'market data'); }
+    catch (e) { log.warn('market data unavailable for a request', { err: e.message }); return {}; }
+  };
 
   // ---------- lifecycle ----------
   /** Creates the portfolio exactly once (₹10,00,000). If it already exists nothing is changed, ever. */
@@ -298,7 +310,7 @@ export function createPortfolioService({
     const syms = [...new Set(open.map((o) => o.symbol))];
     res.symbols = syms.length;
     let quotes = {};
-    try { quotes = await quoteFor(syms); } catch (e) { res.feedError = String(e.message).slice(0, 200); }   // feed down: nothing fills, expiry still runs
+    try { quotes = await withDeadline(quoteRaw(syms), matcherQuoteDeadlineMs, 'market data'); } catch (e) { res.feedError = String(e.message).slice(0, 200); }   // feed down: nothing fills, expiry still runs
     const needs = new Set();
     for (const o of open) {
       const inst = BY_SYM.get(o.symbol), q = quotes[o.symbol];
@@ -451,12 +463,44 @@ export function createPortfolioService({
     status: r.status, reason: r.status_reason || null, waitingReason: r.status === 'open' ? r.waiting_reason || null : null, filledPrice: r.filled_price == null ? null : Number(r.filled_price),
     createdAt: new Date(r.created_at).toISOString(), closedAt: r.closed_at ? new Date(r.closed_at).toISOString() : null, expiresAt: r.expires_at ? new Date(r.expires_at).toISOString() : null });
   const STATUSES = ['open', 'filled', 'cancelled', 'rejected', 'expired'];
-  async function listOrders(userId, { status, limit } = {}) {
+  // Keyset (cursor) pagination: stable while new rows arrive, and cheap at any depth (served by the (user, created_at, id) indexes).
+  // The cursor carries the row's own timestamp as text with microsecond precision, so no row is skipped or repeated.
+  const TS = (col) => `to_char(${col} at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+  const encCursor = (ts, id) => Buffer.from(`${ts}|${id}`).toString('base64url');
+  function decCursor(c) {
+    if (c === undefined || c === null || c === '') return { ts: null, id: null };
+    const [ts, id] = Buffer.from(String(c).slice(0, 200), 'base64url').toString().split('|');
+    if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/.test(ts || '') || !UUID.test(id || '')) throw bad('That page cursor is not valid.', 'BAD_CURSOR');
+    return { ts, id };
+  }
+  const pageSize = (limit, dflt, max) => Math.min(Math.max(parseInt(limit, 10) || dflt, 1), max);
+
+  async function listOrders(userId, { status, limit, before } = {}) {
     if (status !== undefined && !STATUSES.includes(status)) throw bad('Unknown order status.');
-    const n = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 500);
-    const rows = (await db.query(`select id, symbol, side, type, qty::text, limit_price::text, status, status_reason, waiting_reason, filled_price::text, created_at, closed_at, expires_at
-      from orders where user_id=$1 and ($2::text is null or status=$2) order by created_at desc, id desc limit $3`, [userId, status ?? null, n])).rows;
-    return rows.map(orderRow);
+    const n = pageSize(limit, 100, 500), cur = decCursor(before);
+    const rows = (await db.query(`select id, symbol, side, type, qty::text, limit_price::text, status, status_reason, waiting_reason, filled_price::text, created_at, closed_at, expires_at, ${TS('created_at')} as cur_ts
+      from orders where user_id=$1 and ($2::text is null or status=$2)
+        and ($3::text is null or (created_at, id) < ($3::timestamptz, $4::uuid))
+      order by created_at desc, id desc limit $5`, [userId, status ?? null, cur.ts, cur.id, n + 1])).rows;
+    const page = rows.slice(0, n);
+    return { orders: page.map(orderRow), nextCursor: rows.length > n ? encCursor(page[n - 1].cur_ts, page[n - 1].id) : null };
+  }
+  /** Filled trades, newest first. Defaults to the current account epoch (after a reset, older epochs stay available with epoch=all). */
+  async function listTransactions(userId, { limit, before, symbol, side, epoch } = {}) {
+    if (side !== undefined && side !== 'buy' && side !== 'sell') throw bad('Side must be buy or sell.');
+    const sym = symbol === undefined ? null : parseSymbol(symbol).sym;
+    if (epoch !== undefined && epoch !== 'all' && !/^\d{1,6}$/.test(String(epoch))) throw bad('Epoch must be a number or "all".');
+    const n = pageSize(limit, 50, 200), cur = decCursor(before);
+    const rows = (await db.query(`select id, order_id, symbol, side, qty::text, price::text, amount::text, kind, realized::text, note, price_source, epoch, created_at, ${TS('created_at')} as cur_ts
+      from transactions where user_id=$1
+        and ($2::text = 'all' or epoch = case when $2::text = '' then (select epoch from portfolios where user_id=$1) else $2::int end)
+        and ($3::text is null or symbol=$3) and ($4::text is null or side=$4)
+        and ($5::text is null or (created_at, id) < ($5::timestamptz, $6::uuid))
+      order by created_at desc, id desc limit $7`, [userId, epoch === undefined ? '' : String(epoch), sym, side ?? null, cur.ts, cur.id, n + 1])).rows;
+    const page = rows.slice(0, n);
+    return { transactions: page.map((r) => ({ id: r.id, orderId: r.order_id, symbol: r.symbol, side: r.side, qty: Number(r.qty), price: Number(r.price), amount: Number(r.amount), kind: r.kind,
+      realized: r.realized == null ? null : Number(r.realized), note: r.note, source: r.price_source, epoch: r.epoch, createdAt: new Date(r.created_at).toISOString() })),
+    nextCursor: rows.length > n ? encCursor(page[n - 1].cur_ts, page[n - 1].id) : null };
   }
   /** The audit trail of one order. Only the owner can read it. */
   async function orderEvents(userId, orderId) {
@@ -474,14 +518,16 @@ export function createPortfolioService({
       db.query(`select id, symbol, side, qty::text, price::text, amount::text, kind, realized::text, note, price_source, created_at from transactions
                 where user_id=$1 and epoch=$2 order by created_at desc, id desc limit 200`, [userId, p.epoch]),
       db.query('select symbol from watchlists where user_id=$1 order by added_at, symbol', [userId]),
-      db.query("select coalesce(sum(round(qty * limit_price, 2)),0)::text as c from orders where user_id=$1 and status='open' and side='buy'", [userId]),
+      db.query(`select coalesce(sum(round(qty * limit_price, 2)),0)::text as c,
+                       ((select cash from portfolios where user_id=$1) - coalesce(sum(round(qty * limit_price, 2)),0))::text as a
+                from orders where user_id=$1 and status='open' and side='buy'`, [userId]),
       db.query(`select id, symbol, side, type, qty::text, limit_price::text, status, status_reason, waiting_reason, filled_price::text, created_at, closed_at, expires_at
                 from orders where user_id=$1 and epoch=$2 order by created_at desc, id desc limit 100`, [userId, p.epoch]),
     ]);
     const reserved = res.rows[0].c;
     return {
       epoch: p.epoch, startingCash: Number(p.starting_cash), cash: Number(p.cash), reserved: Number(reserved),
-      available: Number((await db.query('select ($1::numeric - $2::numeric)::text as a', [p.cash, reserved])).rows[0].a),
+      available: Number(res.rows[0].a),
       realizedPnl: Number(p.realized_pnl), guestImportPending: !p.guest_import_at, learning: p.learning || {},
       positions: pos.rows.map((r) => ({ symbol: r.symbol, qty: Number(r.qty), costBasis: Number(r.cost_basis), avgCost: Number(r.cost_basis) / Number(r.qty) })),
       orders: ord.rows.map((r) => ({ id: r.id, symbol: r.symbol, side: r.side, type: r.type, qty: Number(r.qty), limitPrice: Number(r.limit_price), note: r.note, createdAt: new Date(r.created_at).toISOString(), waitingReason: r.waiting_reason, expiresAt: r.expires_at ? new Date(r.expires_at).toISOString() : null })),
@@ -493,14 +539,18 @@ export function createPortfolioService({
   }
   /** Reads the portfolio, first settling any open limit orders the current prices satisfy. Never fails the read. */
   async function getPortfolio(userId) {
-    await db.tx((t) => ensurePortfolio(t, userId));
+    // Cheap existence check first: the creating transaction only runs for a brand-new user (ensurePortfolio is itself race-safe).
+    if (!(await db.query('select 1 from portfolios where user_id=$1', [userId])).rows.length) await db.tx((t) => ensurePortfolio(t, userId));
     await matchOpenOrders(userId).catch((e) => log.error('order matching on read failed', e));
     const last = (await db.query('select max(taken_at) as t from portfolio_snapshots where user_id=$1 and epoch=(select epoch from portfolios where user_id=$1)', [userId])).rows[0].t;
     if (!last || now() - new Date(last).getTime() > snapshotEveryMs) await snapshot(userId).catch((e) => log.error('snapshot failed', e));
     return view(userId);
   }
 
-  async function purgeKeys() { await db.query("delete from idempotency_keys where created_at < now() - interval '7 days'"); }
+  async function purgeKeys() {
+    await db.query("delete from idempotency_keys where created_at < now() - interval '7 days'");
+    await db.query("delete from engine_runs where started_at < now() - interval '30 days'");   // operational log only; the order audit trail is never purged
+  }
 
-  return { ensurePortfolio, placeOrder, cancelOrder, matchOpenOrders, placeBasket, addWatch, removeWatch, setLearning, importGuest, dismissGuestImport, reset, snapshot, history, getPortfolio, view, purgeKeys, gate, gateInfo, runMatching, listOrders, orderEvents, settleUser };
+  return { ensurePortfolio, placeOrder, cancelOrder, matchOpenOrders, placeBasket, addWatch, removeWatch, setLearning, importGuest, dismissGuestImport, reset, snapshot, history, getPortfolio, view, purgeKeys, gate, gateInfo, runMatching, listOrders, listTransactions, orderEvents, settleUser };
 }

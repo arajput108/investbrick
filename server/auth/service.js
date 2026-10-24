@@ -56,8 +56,11 @@ export function createAuthService({ db, passwords, mailer, config, now = () => D
       if (u.locked_until && new Date(u.locked_until).getTime() > now()) { await passwords.fakeVerify(password); throw generic; }
       const ok = await passwords.verify(u.password_hash, password);
       if (!ok) {
-        const fails = u.failed_logins + 1, lock = fails >= A.maxFailedLogins;
-        await db.query('update users set failed_logins=$2, locked_until=$3 where id=$1', [u.id, lock ? 0 : fails, lock ? at(now() + A.lockMinutes * 60e3) : null]);
+        // One atomic statement: parallel wrong guesses cannot undercount (a read-then-write in JS would let them all see the same number).
+        await db.query(
+          `update users set failed_logins = case when failed_logins + 1 >= $2 then 0 else failed_logins + 1 end,
+                            locked_until  = case when failed_logins + 1 >= $2 then $3::timestamptz else locked_until end
+           where id = $1`, [u.id, A.maxFailedLogins, at(now() + A.lockMinutes * 60e3)]);
         throw generic;
       }
       return db.tx(async (t) => {
@@ -130,6 +133,19 @@ export function createAuthService({ db, passwords, mailer, config, now = () => D
         await t.query('update users set password_hash=$2, password_changed_at=$3, updated_at=$3 where id=$1', [userId, hash, at(now())]);
         await t.query('delete from sessions where user_id=$1 and token_hash <> $2', [userId, keepToken ? hashToken(keepToken) : '']);
       });
+    },
+
+    /** Permanently deletes the account and everything it owns (foreign keys cascade: portfolio, positions, orders, transactions, watchlist, snapshots, sessions...).
+     *  Requires the current password. The append-only order audit log keeps only anonymous order ids once the user row is gone. */
+    async deleteAccount(userId, { password, confirm } = {}) {
+      if (confirm !== 'DELETE') throw new AuthError(400, 'Type DELETE to confirm.', { confirm: 'Type DELETE to confirm.' });
+      const u = (await db.query('select * from users where id=$1', [userId])).rows[0];
+      if (!u || !(await passwords.verify(u.password_hash, typeof password === 'string' ? password : ''))) throw new AuthError(400, 'Your password is not correct.', { password: 'Incorrect password.' });
+      await db.tx(async (t) => {
+        await t.query('select 1 from portfolios where user_id=$1 for update', [userId]);   // wait for any in-flight trade or matcher pass on this account
+        await t.query('delete from users where id=$1', [userId]);
+      });
+      log.info('account deleted', { userId });
     },
 
     async purgeExpired() {

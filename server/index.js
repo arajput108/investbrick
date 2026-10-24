@@ -34,7 +34,7 @@ const market = createMarketService({
 let auth = null, db = null, service = null, portfolioRouter = null, portfolio = null, matcher = null;
 if (config.db.url || config.db.driver === 'pglite') {
   try {
-    db = await createDb({ driver: config.db.driver, url: config.db.url, pgliteDir: config.db.pgliteDir, isProd: config.isProd });
+    db = await createDb({ driver: config.db.driver, url: config.db.url, pgliteDir: config.db.pgliteDir, isProd: config.isProd, poolMax: config.db.poolMax, statementTimeoutMs: config.db.statementTimeoutMs });
     let applied = [];
     if (config.migrateOnStart) applied = await migrate(db, { log: (m) => log.info('migration ' + m) });
     else {
@@ -63,7 +63,11 @@ if (config.db.url || config.db.driver === 'pglite') {
 const health = () => ({ matcher: matcher ? { enabled: true, alive: matcher.alive() } : { enabled: false } });
 const ready = async () => {
   const checks = {};
-  if (db) { try { await db.query('select 1'); checks.database = 'ok'; } catch { checks.database = 'unreachable'; } }
+  if (db) {
+    // Bounded: a database that is waking up (Neon free) or down must produce an answer, not a hung probe.
+    try { await Promise.race([db.query('select 1'), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 4000).unref())]); checks.database = 'ok'; }
+    catch (e) { checks.database = e.message === 'timeout' ? 'timeout' : 'unreachable'; }
+  }
   else checks.database = 'not configured';
   if (matcher) checks.matcher = matcher.alive() ? 'ok' : 'stalled';
   return { ok: Object.values(checks).every((v) => v === 'ok' || v === 'not configured'), checks };

@@ -14,7 +14,7 @@ export function createYahoo({ fetchImpl = fetch } = {}) {
         const url = `https://${h}/v8/finance/chart/${encodeURIComponent(ref)}?range=${range}&interval=${interval}&includePrePost=false`;
         const j = await getJson(fetchImpl, url, { headers: { 'user-agent': 'Mozilla/5.0 InvestBrick-demo' } });
         const r = j?.chart?.result?.[0];
-        if (!r) throw new Error(j?.chart?.error?.description || 'empty chart result');
+        if (!r) throw Object.assign(new Error(j?.chart?.error?.description || 'empty chart result'), { dataError: true });   // this symbol has no data: not a provider outage
         return r;
       } catch (e) { lastErr = e; }
     }
@@ -28,7 +28,7 @@ export function createYahoo({ fetchImpl = fetch } = {}) {
       const r = await chart(inst.ref, '5d', '1d');
       const m = r.meta || {};
       const price = num(m.regularMarketPrice);
-      if (price === null || price <= 0) throw new Error('invalid price');
+      if (price === null || price <= 0) throw Object.assign(new Error('invalid price'), { dataError: true });
       let prev = num(m.chartPreviousClose) ?? num(m.previousClose);
       const closes = (r.indicators?.quote?.[0]?.close || []).filter((x) => num(x) !== null);
       // chartPreviousClose over a 5d range is the close BEFORE the range; use the last
@@ -47,7 +47,7 @@ export function createYahoo({ fetchImpl = fetch } = {}) {
         if (o === null || h === null || l === null || c === null) continue; // skip null bars
         out.push({ t: ts[i] * 1000, o, h, l, c, v: num(q.volume?.[i]) ?? 0 });
       }
-      if (!out.length) throw new Error('no candles');
+      if (!out.length) throw Object.assign(new Error('no candles'), { dataError: true });
       return { interval: iv, candles: out };
     },
   };

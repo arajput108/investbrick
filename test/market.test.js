@@ -96,3 +96,40 @@ test('api: routes, validation, unknown symbol', async () => {
     assert.equal((await fetch(base + '/api/nothing')).status, 404);
   } finally { server.close(); }
 });
+
+const chartResp = (price) => resp(yahooBody(price, [100, 110, price]));
+const inst = (ref, sym = ref) => ({ sym, ref, provider: 'yahoo', market: 'NSE', type: 'stock' });
+
+test('breaker: symbols with no data never pause the provider; real outages (5xx) do', async () => {
+  const { createMarketService: mk } = await import('../server/market/service.js');
+  let mode = 'nodata';
+  const fetchImpl = async (url) => {
+    if (mode === 'outage') return resp({}, 503);
+    if (/RELIANCE/.test(url)) return chartResp(1000);
+    return resp({ chart: { result: null, error: { description: 'No data found, symbol may be delisted' } } });   // unknown symbol
+  };
+  const m = mk({ yahoo: createYahoo({ fetchImpl }), coingecko: createCoinGecko({ fetchImpl: async () => resp({}) }) });
+  for (let i = 0; i < 4; i++) {
+    const r = await m.quotes(['TCS', 'INFY', 'HDFCBANK', 'RELIANCE']);               // three symbols fail every time
+    assert.ok(r.quotes.RELIANCE, 'healthy symbol still served on round ' + i);
+    assert.equal(Object.keys(r.errors).length, 3);
+  }
+  assert.equal(m.status().providers.yahoo.breakerOpen, false);
+  mode = 'outage';
+  await m.quotes(['ITC', 'SBIN', 'LT']);
+  assert.equal(m.status().providers.yahoo.breakerOpen, true);
+});
+
+test('HTTP 429 with Retry-After opens the breaker for at least that long, then recovers; no upstream calls while paused', async () => {
+  const { createMarketService: mk } = await import('../server/market/service.js');
+  let t = 1_000_000, calls = 0, limited = true;
+  const fetchImpl = async () => { calls++; return limited ? { ok: false, status: 429, headers: { get: (h) => (h.toLowerCase() === 'retry-after' ? '120' : null) }, json: async () => ({}) } : chartResp(500); };
+  const m = mk({ yahoo: createYahoo({ fetchImpl }), coingecko: createCoinGecko({ fetchImpl: async () => resp({}) }), now: () => t, ttl: { eqOpen: 1, eqClosed: 1 } });
+  await m.quotes(['RELIANCE']);
+  assert.equal(m.status().providers.yahoo.breakerOpen, true);
+  const before = calls; t += 60_000;
+  const paused = await m.quotes(['RELIANCE']);
+  assert.equal(calls, before); assert.match(paused.errors.RELIANCE, /paused/);
+  limited = false; t += 61_000;                                       // 121 s after the 429: past Retry-After
+  assert.ok((await m.quotes(['RELIANCE'])).quotes.RELIANCE);
+});

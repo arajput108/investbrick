@@ -20,7 +20,7 @@ export async function migrate(db, { log = () => {} } = {}) {
   for (const f of files) {
     await db.tx(async (t) => {
       // Serialise concurrent deploys (two instances starting at once) on Postgres.
-      if (db.kind === 'pg') await t.query('select pg_advisory_xact_lock(727274)');
+      if (db.kind === 'pg') { await t.query('select pg_advisory_xact_lock(727274)'); await t.query('set local statement_timeout = 0'); }
       const done = await t.query('select 1 from schema_migrations where name = $1', [f]);
       if (done.rows.length) return;
       await t.exec(await fs.readFile(path.join(dir, f), 'utf8'));
@@ -29,4 +29,24 @@ export async function migrate(db, { log = () => {} } = {}) {
     });
   }
   return applied;
+}
+
+const downDir = path.join(dir, 'down');
+/** Reverses the most recently applied migration, but ONLY if a matching migrations/down/<name> file exists (additive migrations such as
+ *  004 have one; 001-003 create the core tables and deliberately have none, because rolling them back would delete user data). */
+export async function rollbackLast(db, { log = () => {} } = {}) {
+  const has = (await db.query("select to_regclass('public.schema_migrations') as t")).rows[0].t;
+  if (!has) throw new Error('No migrations have been applied.');
+  const last = (await db.query('select name from schema_migrations order by name desc limit 1')).rows[0]?.name;
+  if (!last) throw new Error('No migrations have been applied.');
+  let sql;
+  try { sql = await fs.readFile(path.join(downDir, last), 'utf8'); }
+  catch { throw new Error(`Refusing to roll back ${last}: it has no migrations/down/${last} file (it may hold user data). Restore from a Neon backup instead.`); }
+  await db.tx(async (t) => {
+    if (db.kind === 'pg') { await t.query('select pg_advisory_xact_lock(727274)'); await t.query('set local statement_timeout = 0'); }
+    await t.exec(sql);
+    await t.query('delete from schema_migrations where name = $1', [last]);
+  });
+  log(`rolled back ${last}`);
+  return last;
 }

@@ -29,7 +29,8 @@ export function createPortfolioRouter({ service, auth, config = {} }) {
   r.get('/', h((req) => service.getPortfolio(uid(req))));
   r.get('/history', h(async (req) => ({ points: await service.history(uid(req), req.query.limit) })));
 
-  r.get('/orders', h(async (req) => ({ orders: await service.listOrders(uid(req), { status: req.query.status, limit: req.query.limit }) })));
+  r.get('/orders', h((req) => service.listOrders(uid(req), { status: req.query.status, limit: req.query.limit, before: req.query.before })));
+  r.get('/transactions', h((req) => service.listTransactions(uid(req), { limit: req.query.limit, before: req.query.before, symbol: req.query.symbol, side: req.query.side, epoch: req.query.epoch })));
   r.get('/orders/:id/events', h(async (req) => ({ events: await service.orderEvents(uid(req), req.params.id) })));
   r.post('/orders', perUser(L.orders), h(async (req) => withPortfolio(req, await service.placeOrder(uid(req), req.body))));
   r.delete('/orders/:id', perUser(L.orders), h(async (req) => withPortfolio(req, await service.cancelOrder(uid(req), req.params.id))));

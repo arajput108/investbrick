@@ -17,7 +17,13 @@ export function createMarketService({ yahoo, coingecko, now = () => Date.now(), 
   const breakers = { yahoo: new Breaker({ now }), coingecko: new Breaker({ now }) };
   const guard = async (name, fn) => {
     if (breakers[name].isOpen) throw new Error(`${name} temporarily paused after repeated errors`);
-    try { const r = await fn(); breakers[name].ok(); return r; } catch (e) { breakers[name].fail(); throw e; }
+    try { const r = await fn(); breakers[name].ok(); return r; }
+    catch (e) {
+      // Only provider-level trouble counts against the breaker. "This symbol has no data" (dataError / HTTP 404) must not pause every other symbol.
+      if (e.status === 429) breakers[name].trip(e.retryAfterMs);
+      else if (!e.dataError && e.status !== 404) breakers[name].fail();
+      throw e;
+    }
   };
 
   function describe(inst, raw, meta) {
