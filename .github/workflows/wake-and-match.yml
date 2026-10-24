@@ -1,0 +1,27 @@
+# Free "scheduled opportunity" for limit orders on Render's free plan (US$0).
+# Render's free service sleeps after ~15 idle minutes. This workflow calls the site, which wakes it (about a minute) and runs one
+# order-matching pass. It is BEST EFFORT: GitHub may delay or skip scheduled runs, so orders can still fill late. Orders are never
+# filled on stale or invented prices, and never twice.
+# Needs two repository secrets (Settings > Secrets and variables > Actions): SITE_URL (https://your-site, no trailing slash) and CRON_SECRET.
+name: wake-and-match
+on:
+  schedule:
+    - cron: '*/15 3-10 * * 1-5'   # every ~15 min, 03:00-10:59 UTC = 08:30-16:29 IST on weekdays (NSE trades 09:15-15:30 IST)
+    - cron: '17 */3 * * *'        # every 3 hours, any day: lets crypto limit orders and expiries be processed
+  workflow_dispatch: {}
+permissions: {}
+concurrency: { group: wake-and-match, cancel-in-progress: false }
+jobs:
+  match:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wake the site and run one matching pass
+        env:
+          SITE_URL: ${{ secrets.SITE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$SITE_URL" ] || [ -z "$CRON_SECRET" ]; then echo "SITE_URL and CRON_SECRET secrets are not set; nothing to do."; exit 1; fi
+          curl --fail-with-body --silent --show-error --max-time 150 --retry 3 --retry-delay 20 --retry-all-errors \
+            -X POST -H "Authorization: Bearer $CRON_SECRET" "$SITE_URL/api/internal/match"
+          echo

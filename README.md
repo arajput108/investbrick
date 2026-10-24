@@ -71,7 +71,7 @@ Reset emails need an SMTP service. In development, `EMAIL_PROVIDER=console` prin
 - **Brevo** (free ~300 emails/day): create an account, SMTP & API > SMTP keys, host `smtp-relay.brevo.com`, port 587, your login and the SMTP key. Verify your sender address.
 - **Resend**: host `smtp.resend.com`, port 465 with `SMTP_SECURE=true`, user `resend`, password = API key. You must verify a domain you own to email anyone except yourself.
 - **Gmail** (testing only): enable 2-step verification, create an App Password, host `smtp.gmail.com`, port 587.
-Production start is refused if SMTP is missing, so users never get silent failures. **Email sending itself could not be tested from the build sandbox (no network)**: send yourself a reset link once after configuring.
+Without SMTP settings the production server still starts (`EMAIL_PROVIDER=none` is chosen automatically and a warning is logged): registration and login work, and "forgot password" answers **HTTP 503 "Password reset by email is not available on this server right now"**. It never pretends to send an email. **Email sending itself could not be tested from the build sandbox (no network)**: send yourself a reset link once after configuring.
 
 ### Security design (what protects what)
 | Risk | Defence |
@@ -156,7 +156,7 @@ Nothing to install. Start the server (or `npm run migrate`) and migration 003 ap
 `GET /api/portfolio/orders?status=&limit=` and `GET /api/portfolio/orders/:id/events` (owner only). The portfolio response also includes `orderLog`.
 
 ### Tests
-`npm test` runs 73 tests on PGlite; `npm run test:pg` runs portfolio and engine suites on a real PostgreSQL. New engine tests cover: background fill with no browser, market closed/reopen, feed failure (throws, missing, stale, frozen, outlier) and recovery, concurrent ticks and reads, cancel-versus-fill races, overspend and tampered-state rejection, expiry, restart simulation, matcher loop survival and status, two matchers, overlap guard, audit immutability, owner-only APIs, and 3-user randomized load with exact ledger checks.
+`npm test` runs 91 tests on PGlite; `npm run test:pg` runs portfolio and engine suites on a real PostgreSQL. New engine tests cover: background fill with no browser, market closed/reopen, feed failure (throws, missing, stale, frozen, outlier) and recovery, concurrent ticks and reads, cancel-versus-fill races, overspend and tampered-state rejection, expiry, restart simulation, matcher loop survival and status, two matchers, overlap guard, audit immutability, owner-only APIs, and 3-user randomized load with exact ledger checks.
 
 ### Remaining limitations
 - Prices for NSE are delayed (~15 min) and unofficial (Yahoo); the live feeds, email and Neon were not reachable from my test sandbox. Please run `npm run smoke` and watch the server log yourself.
@@ -175,9 +175,9 @@ Nothing to install. Start the server (or `npm run migrate`) and migration 003 ap
 ### Architecture, costs and why
 | Part | Service | Cost | Why |
 |---|---|---|---|
-| Website, API and the background matcher (one Node process) | **Render** web service, plan **Starter**, 1 instance | about US$7/month (I could not open Render's price page: confirm on render.com/pricing) | Always on. Render's free web service sleeps after ~15 idle minutes, which would silently stop limit-order matching. HTTPS and custom domains are included. |
+| Website, API and the background matcher (one Node process) | **Render** web service, plan **Free** (`render.yaml` now says `plan: free`) | US$0. To make the matcher reliable, change it to `starter` (about US$7/month (I could not open Render's price page: confirm on render.com/pricing) | Always on. Render's free web service sleeps after ~15 idle minutes, which would silently stop limit-order matching. HTTPS and custom domains are included. |
 | Database | **Neon** Postgres, Free plan | $0 (no card). Free plan: 1 GB storage, 100 compute-hours/month, compute suspends after 5 idle minutes (checked on neon.com/pricing) | Persistent accounts, cash, holdings, orders, transactions, learning progress. |
-| Password-reset email | Any SMTP service (Brevo, Resend, Gmail app password...) | free tiers exist; check current limits | Required in production; there is no fake email mode. |
+| Password-reset email | Optional: any SMTP service (Brevo...) | $0 with free tiers; check current limits | Without it, password reset reports itself as unavailable (HTTP 503); everything else works. There is no fake email mode. |
 | Crypto prices | CoinGecko free **Demo** key | $0 | Optional but recommended. |
 | Custom domain | Any registrar | about US$10 to 15/year | Optional. |
 
@@ -185,11 +185,22 @@ Nothing to install. Start the server (or `npm run migrate`) and migration 003 ap
 
 **Why one instance:** the matcher is safe with more instances (a database lease elects one leader, and row locks plus a unique index make double fills impossible even if two ran at once; both are tested), but rate-limit counters and the price cache are per instance, so one is simplest.
 
+### The free (US$0) setup and its limits
+`render.yaml` now uses `plan: free`. Everything here costs nothing: Render Free + Neon Free, no card needed for Neon; Render may still ask for account details at sign-up (check their page). What you must know:
+- **The background matcher is NOT continuous on the free plan.** Render spins a free web service down after 15 minutes without inbound traffic and wakes it on the next request (about a minute; confirmed on render.com/docs/free). While it sleeps nothing checks limit orders. The matcher code is unchanged and runs whenever the server is awake. After a wake-up it runs within seconds and fills every order whose price condition is then met **at the price seen at that moment** (not the price you were waiting for); expired orders are closed. Fills are never duplicated and never use stale or invented prices, but they can be late, or missed if the price moved back. Market orders and trading while you use the site are not affected.
+- **Best honest free improvement: a scheduled wake-up (Step G).** A free GitHub Actions workflow in this repo (`.github/workflows/wake-and-match.yml`) calls a secured endpoint every ~15 minutes during NSE hours on weekdays and every 3 hours otherwise. That wakes the site and runs one matching pass. GitHub's schedules are best effort (they can be delayed or skipped, and GitHub's minimum interval is 5 minutes), so this narrows the gap but does **not** make execution continuous. I have not verified that Render's terms allow this kind of scheduled wake-up, nor GitHub's free-minute quota for your repo (check github.com/settings/billing; the workflow uses roughly 1 to 2 minutes per run).
+- **Password-reset email works over HTTPS, not SMTP.** Render blocks outbound SMTP ports 25, 465 and 587 on free web services, so Phase 5's SMTP route cannot work there. The server now has a **Brevo API** provider (`BREVO_API_KEY`, port 443). Brevo's Free plan is 300 emails/day, needs no credit card, includes the transactional API, and adds a "Sent with Brevo" logo to emails (per a third-party review; check Brevo's own pricing page). Without `BREVO_API_KEY` (or SMTP) the site still works and "forgot password" says it is unavailable (HTTP 503), so users who forget a password cannot recover that account.
+- Slow first page after quiet periods (Render wakes, then Neon wakes).
+- Render's free monthly instance-hour allowance and other free-plan limits: check render.com/docs/free; I could not read that page.
+- Do not rely on a keep-alive pinger: I have not checked whether Render allows it or how many free hours it would use.
+- Neon Free: 1 GB, 100 compute-hours, 6-hour restore window; take your own backups.
+- To upgrade later, set `plan: starter` in `render.yaml` (the matcher then runs continuously) and add the SMTP variables.
+
 ### Required accounts
 1. **GitHub** (Render deploys from a repository). Create a **private** repo and push this project (`.env` is git-ignored, never commit secrets).
 2. **Neon** (you already have a project: org `org-shiny-fire-16337174`, project `billowing-pine-85276930`, branch `production`).
-3. **Render** (card required for Starter).
-4. **An SMTP provider** for password-reset email.
+3. **Render** (Free plan; a card is only needed for paid plans, but check Render's sign-up page).
+4. *(Optional)* **An SMTP provider** for password-reset email (not needed to run the site).
 5. **CoinGecko** (free Demo API key, optional).
 
 ### Environment variables
@@ -202,22 +213,26 @@ Set these in Render (the Blueprint creates the non-secret ones for you; the rest
 | `APP_URL` | yes | your public `https://` address, no trailing slash (used in reset emails) |
 | `TRUST_PROXY` | yes | `1` (set by the Blueprint) |
 | `DB_DRIVER` / `EMAIL_PROVIDER` | yes | `pg` / `smtp` (set by the Blueprint) |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM` | yes | from your SMTP provider |
+| `BREVO_API_KEY`, `EMAIL_FROM` | optional (recommended) | Brevo API key (not the SMTP key) and your verified sender, written `InvestBrick <you@example.com>`. Works on Render Free. |
+| `CRON_SECRET` | optional (recommended on free hosting) | a long random string you invent (for example the output of `openssl rand -hex 32`); enables `POST /api/internal/match` for the scheduled wake-up. Unset = that endpoint does not exist. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` | optional (not usable on Render Free) | from your SMTP provider. Leave all unset to run without email (password reset reports unavailable). Add them later in Render > Environment. |
 | `COINGECKO_API_KEY` | recommended | CoinGecko Demo key |
 | `MATCHER_ENABLED`, `MATCHER_INTERVAL_SEC`, `MATCHER_IDLE_RECHECK_SEC`, `ORDER_TTL_DAYS` | no | defaults `true`, `15`, `1800`, `30` |
 | `MIGRATE_ON_START` | no | default `true` (see Migrations) |
 | `LOG_LEVEL`, `SHUTDOWN_GRACE_SEC`, `SESSION_DAYS`, `SESSION_IDLE_DAYS` | no | defaults `info`, `25`, `30`, `7` |
 
-There is **no session secret to set**: sessions are random 256-bit tokens stored only as SHA-256 hashes in the database, and passwords use Argon2id. The server **refuses to start in production** (and logs exactly why) if `DATABASE_URL`, `APP_URL`, SMTP or `TRUST_PROXY` are missing or wrong; nothing is silently disabled.
+There is **no session secret to set**: sessions are random 256-bit tokens stored only as SHA-256 hashes in the database, and passwords use Argon2id. The server **refuses to start in production** (and logs exactly why) if `DATABASE_URL`, `APP_URL` or `TRUST_PROXY` are missing or wrong. Missing SMTP is the one exception: the server starts, logs a warning, and password reset visibly reports that it is unavailable.
 
 ### Step by step
 **A. Get the code onto GitHub.** On your computer, in the project folder: `git init`, `git add .`, `git commit -m "InvestBrick"`, create an empty **private** repository on github.com, then run the two commands GitHub shows (`git remote add origin ...` and `git push -u origin main`). Check that `.env` is not in the repository.
 
 **B. Neon.** In the Neon console open your project, branch `production`, click **Connect**, switch **Connection pooling off**, and copy the string. (The pooled string should also work, but only the direct one was tested.) Keep it private.
 
-**C. Email (SMTP).** Easiest free route: create a Brevo account, verify a sender address, then SMTP & API > SMTP: host `smtp-relay.brevo.com`, port `587`, your login and generated SMTP key. Alternative: a Gmail account with 2-step verification and an *app password* (host `smtp.gmail.com`, port 587, `EMAIL_FROM` must be that Gmail address). Check the provider's current free limits.
+**C. Email, optional (skip it and password reset reports itself unavailable).** Free route that works on Render Free: create a Brevo account (Free plan, no card), verify your sender email under Senders, then SMTP & API > API keys > generate a key. Put it in Render as `BREVO_API_KEY` and set `EMAIL_FROM` to `InvestBrick <your-verified-sender@example.com>`. If Brevo rejects calls from Render, check Security > Authorized IPs in Brevo (unverified; I could not test the live API). *Old SMTP route, paid Render plans only.* Easiest free route: create a Brevo account, verify a sender address, then SMTP & API > SMTP: host `smtp-relay.brevo.com`, port `587` (use `2525` if you run on Render's free plan, see below), your login and generated SMTP key. Alternative: a Gmail account with 2-step verification and an *app password* (host `smtp.gmail.com`, port 587, `EMAIL_FROM` must be that Gmail address; Gmail does not offer a port Render's free plan allows). Check the provider's current free limits.
 
-**D. Render.** Dashboard > **New > Blueprint** > pick your repo. Render reads `render.yaml` and asks for the secret values: paste `DATABASE_URL`, the SMTP settings and `EMAIL_FROM`, `COINGECKO_API_KEY`, and for `APP_URL` put `https://investbrick.onrender.com` for now. Click **Apply**. Render builds (`npm ci --omit=dev`), starts the server, applies the database migrations automatically, and checks `/healthz`. When it is live, open the service page, copy its real address (the name can get a suffix if taken), set `APP_URL` to exactly that, and save (it redeploys).
+**D. Render.** Dashboard > **New > Blueprint** > pick your repo. Render reads `render.yaml` and asks for just two values: paste `DATABASE_URL`, and for `APP_URL` put `https://investbrick.onrender.com` for now. Click **Apply**. (Optional extras, added afterwards in the service's **Environment** tab: the SMTP settings and `EMAIL_FROM` from step C, and `COINGECKO_API_KEY`.) Render builds (`npm ci --omit=dev`), starts the server, applies the database migrations automatically, and checks `/healthz`. When it is live, open the service page, copy its real address (the name can get a suffix if taken), set `APP_URL` to exactly that, and save (it redeploys).
+
+**G. Scheduled wake-up for limit orders (optional, free).** In Render > Environment add `CRON_SECRET` (a long random string). In GitHub: your repo > Settings > Secrets and variables > Actions > New repository secret: `CRON_SECRET` (the same value) and `SITE_URL` (`https://your-service.onrender.com`, no trailing slash). The workflow in `.github/workflows/wake-and-match.yml` then runs on its own; test it once from the Actions tab with **Run workflow**. A green run prints `{"ok":true,...}` with counts only. Public repositories may have scheduled workflows paused after a period without activity: re-enable them in the Actions tab if so (not verified for private repos).
 
 **E. Custom domain (optional).** Render service > Settings > Custom Domains > add `www.yourdomain.com`, create the DNS record Render shows at your registrar, wait for the certificate, then change `APP_URL` to `https://www.yourdomain.com`.
 
@@ -230,7 +245,7 @@ npm run verify:deploy -- https://YOUR-SITE --full --reset-email=you@gmail.com
 
 ### Production verification checklist
 - [ ] `verify:deploy` shows no FAIL. Live quotes for RELIANCE/NIFTYBEES (Yahoo) and BTC/ETH (CoinGecko) pass. If an equity quote fails, Yahoo is blocking Render's IP: equities then show as unavailable (never invented) and market orders are refused.
-- [ ] Password reset: the email arrives (check spam), the link opens `/reset-password`, the new password works, the old one does not.
+- [ ] Password reset (only if you configured SMTP; otherwise confirm the page says it is unavailable): the email arrives (check spam), the link opens `/reset-password`, the new password works, the old one does not.
 - [ ] Register in a normal browser, buy something, close the browser, log in from your phone: same cash and holdings.
 - [ ] **Background matcher, crypto (any time):** `npm run verify:deploy -- https://YOUR-SITE --full --matcher-test=15` places a BTC buy limit 0.2% under the price and waits; a pass reads "filled by the BACKGROUND matcher (actor=matcher)". The server fills it even if you close everything; this works because crypto trades 24x7. Crypto prices are cached for up to 5 minutes, so allow at least that long.
 - [ ] **Background matcher, equities:** while NSE is closed place a *limit* buy for an ETF above the current price. It shows "Waiting: market is closed" in the Order log; the next market open it fills with no browser open (Order log shows Filled, and `GET /api/portfolio/orders/<id>/events` shows `actor: matcher`).
@@ -261,10 +276,14 @@ npm run verify:deploy -- https://YOUR-SITE --full --reset-email=you@gmail.com
 | 503 "Accounts are not set up" | The database did not start: see the log line `could not start accounts`. |
 | Login works but you are logged out on the next page | `APP_URL` is not your real `https://` address, or you opened the site over `http://`. |
 | 403 `BAD_ORIGIN` on login or orders | Request came from a different site than the one you are on (for example a cached old domain). Hard-refresh; check `APP_URL`. |
+| Reset email times out on Render's free plan | Render blocks outbound SMTP ports 25, 465 and 587 on free web services. Set `SMTP_PORT=2525` (Brevo supports it; not verified by me with this app) or move to a paid plan. |
+| "Password reset by email is not available" (503) | No email service configured. Add `BREVO_API_KEY` and `EMAIL_FROM` in Render > Environment. |
+| Log line `Brevo API refused the email (HTTP 401/400)` | Wrong or unauthorised API key, or `EMAIL_FROM` is not a verified Brevo sender. The user still sees the generic "link is on its way" message (so the form cannot reveal which emails have accounts); only your logs show the failure. |
+| Scheduled workflow fails with 401 | `CRON_SECRET` differs between GitHub and Render. Fails with 404 | `CRON_SECRET` is not set on Render. Fails on timeout | The site took too long to wake; it retries 3 times, run it again. |
 | Reset email never arrives | Check SMTP variables and that `EMAIL_FROM` is a sender your provider allows; look for `password reset email failed` in the logs; check spam. |
 | Crypto prices show unavailable / 429 | Add `COINGECKO_API_KEY` (free Demo key); the free tier is rate limited. |
 | Equity prices unavailable | Yahoo may block a cloud IP (it is an unofficial source). Nothing is faked; see Limitations. |
-| Limit orders never fill | `/healthz` should show `matcher.alive: true`; check the plan is Starter (not Free); NSE orders only fill during market hours; the Order log shows the waiting reason. |
+| Limit orders never fill | `/healthz` should show `matcher.alive: true`; on the Free plan the server sleeps and orders wait until it wakes (open the site and wait a minute); NSE orders only fill during market hours; the Order log shows the waiting reason. |
 | Build fails on `argon2` | Make sure `NODE_VERSION` is 22 (set by the Blueprint). |
 
 ### How I tested Phase 5 (and what I could not)
@@ -279,5 +298,7 @@ npm run verify:deploy -- https://YOUR-SITE --full --reset-email=you@gmail.com
 - Rate-limit counters and the price cache are per instance.
 - No two-factor login, no email verification at signup, no admin console or alerting (use an external uptime monitor on `/readyz`).
 - The CSP still allows inline scripts/styles because the front end is a single HTML file.
-- Render's price and Brevo/Gmail limits were not verified by me; check them before relying on them.
+- Brevo/Gmail limits and Render's free-hour allowance were not verified by me; check them before relying on them.
+- Free hosting: limit orders are unreliable while the server sleeps (the scheduled wake-up narrows but does not close the gap), and password reset is unavailable without a Brevo API key.
+- **Verification status.** Tested locally and against a real PostgreSQL server: everything in `npm test` and `npm run test:pg`, including the Brevo-API request shape and the whole reset flow against a mock HTTP server, and the secured wake-up endpoint on a real server process. **Not verified on any real service:** Brevo's live API, Render, Neon, GitHub Actions scheduling, Yahoo and CoinGecko. Do not treat password recovery or deployment as working until you have run `npm run verify:deploy` and received a real reset email.
 - Real-money trading does not exist and was not added.

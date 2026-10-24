@@ -295,3 +295,62 @@ test('purgeExpired removes stale sessions and old reset tokens', async () => {
   assert.equal((await db.query('select count(*)::int c from sessions')).rows[0].c, 0);
   a.close();
 });
+
+test('no email service configured: password reset says it is unavailable (503), registration, login and logout still work', async () => {
+  const mailer = createMailer({ provider: 'none', from: 'IB <a@b.c>', isProd: true });
+  assert.equal(mailer.available, false);
+  await assert.rejects(mailer.send({ to: 'a@b.c', subject: 's', text: 't' }), /not configured/);
+  const config = { isProd: false, trustProxy: 0, appUrl: 'https://investbrick.example', auth: {}, rateLimits: { loginIp: 1000, loginAcct: 1000, register: 1000, forgot: 1000, reset: 1000, change: 1000 } };
+  const service = createAuthService({ db, config, mailer, passwords: createPasswords({ memoryCost: 1024, timeCost: 1 }) });
+  const server = createApp({ market, config, auth: createAuth({ service, config }) }).listen(0);
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const c = client(base), email = uniq();
+    assert.equal((await reg(c, { email })).status, 201);
+    assert.equal((await c.api('POST', '/api/auth/logout', {})).status, 200);
+    assert.equal((await c.api('POST', '/api/auth/login', { email, password: GOOD })).status, 200);
+    const known = await c.api('POST', '/api/auth/forgot-password', { email });
+    const unknown = await c.api('POST', '/api/auth/forgot-password', { email: uniq() });
+    for (const r of [known, unknown]) { assert.equal(r.status, 503); assert.equal(r.json.code, 'EMAIL_UNAVAILABLE'); assert.match(r.json.error, /not available/); }
+    assert.equal((await c.api('GET', '/api/auth/me')).json.user.email, email);
+  } finally { server.close(); server.closeAllConnections(); }
+});
+
+test('brevo-api provider: sends one HTTPS request with the key in a header, correct sender/recipient, never leaks the key; failures surface', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => { calls.push({ url, init }); return calls.length === 1 ? { ok: true, status: 201, json: async () => ({ messageId: 'x' }) } : { ok: false, status: 401, json: async () => ({ code: 'unauthorized' }) }; };
+  const mailer = createMailer({ provider: 'brevo-api', from: 'InvestBrick <noreply@example.com>', isProd: true, brevo: { apiKey: 'xkeysib-SECRET' }, fetchImpl });
+  assert.equal(mailer.available, true);
+  assert.deepEqual(await mailer.send({ to: 'asha@example.com', subject: 'Hi', text: 't', html: '<b>h</b>' }), { delivered: true });
+  const body = JSON.parse(calls[0].init.body);
+  assert.equal(calls[0].url, 'https://api.brevo.com/v3/smtp/email');
+  assert.equal(calls[0].init.headers['api-key'], 'xkeysib-SECRET');
+  assert.deepEqual(body.sender, { name: 'InvestBrick', email: 'noreply@example.com' });
+  assert.deepEqual(body.to, [{ email: 'asha@example.com' }]);
+  assert.equal(body.subject, 'Hi'); assert.equal(body.textContent, 't');
+  await assert.rejects(mailer.send({ to: 'a@b.c', subject: 's', text: 't' }), (e) => /HTTP 401/.test(e.message) && !/SECRET/.test(e.message));
+  assert.equal(createMailer({ provider: 'brevo-api', isProd: true, brevo: {} }).available, false);
+});
+
+test('password reset end to end through the Brevo API provider: token link built from APP_URL, mail only for real accounts', async () => {
+  const sentBodies = [];
+  const fetchImpl = async (_u, init) => { sentBodies.push(JSON.parse(init.body)); return { ok: true, status: 201, json: async () => ({}) }; };
+  const mailer = createMailer({ provider: 'brevo-api', from: 'IB <a@b.c>', isProd: true, brevo: { apiKey: 'k' }, fetchImpl });
+  const config = { isProd: false, trustProxy: 0, appUrl: 'https://investbrick.example', auth: {}, rateLimits: { loginIp: 1000, loginAcct: 1000, register: 1000, forgot: 1000, reset: 1000, change: 1000 } };
+  const service = createAuthService({ db, config, mailer, passwords: createPasswords({ memoryCost: 1024, timeCost: 1 }) });
+  const server = createApp({ market, config, auth: createAuth({ service, config }) }).listen(0);
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const c = client(base), email = uniq();
+    await reg(c, { email });
+    assert.equal((await c.api('POST', '/api/auth/forgot-password', { email })).status, 200);
+    assert.equal((await c.api('POST', '/api/auth/forgot-password', { email: uniq() })).status, 200);
+    assert.equal(sentBodies.length, 1);
+    const token = /#token=([A-Za-z0-9_-]+)/.exec(sentBodies[0].textContent)[1];
+    assert.match(sentBodies[0].textContent, /^Hi Asha Rao,[\s\S]*https:\/\/investbrick\.example\/reset-password#token=/);
+    assert.equal((await c.api('POST', '/api/auth/reset-password', { token, password: 'Another-Strong-Pass-9' })).status, 200);
+    assert.equal((await c.api('POST', '/api/auth/reset-password', { token, password: 'Third-Strong-Pass-9x' })).status, 400);   // single use
+    assert.equal((await client(base).api('POST', '/api/auth/login', { email, password: 'Another-Strong-Pass-9' })).status, 200);
+    assert.equal((await client(base).api('POST', '/api/auth/login', { email, password: GOOD })).status, 401);
+  } finally { server.close(); server.closeAllConnections(); }
+});

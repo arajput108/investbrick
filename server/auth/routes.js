@@ -58,7 +58,7 @@ export function createAuth({ service, config }) {
   const wrap = (fn) => async (req, res) => {
     try { await fn(req, res); }
     catch (e) {
-      if (e instanceof AuthError) return res.status(e.status).json({ error: e.message, fields: e.fields });
+      if (e instanceof AuthError) return res.status(e.status).json({ error: e.message, fields: e.fields, ...(e.code ? { code: e.code } : {}) });
       log.error('auth request failed', { err: e, requestId: req.id });
       res.status(500).json({ error: 'Something went wrong on our side. Please try again.' });
     }

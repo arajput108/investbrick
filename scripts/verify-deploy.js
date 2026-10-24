@@ -70,6 +70,7 @@ async function main() {
   if (RESET_EMAIL) {
     r = await call('POST', '/api/auth/forgot-password', { email: RESET_EMAIL });
     if (r.status === 200) manual('password-reset email', `request accepted for ${RESET_EMAIL}. Open your inbox (and spam), click the link, set a new password. If nothing arrives within 2 minutes the SMTP settings are wrong: see Troubleshooting in the README`);
+    else if (r.status === 503 && r.json?.code === 'EMAIL_UNAVAILABLE') skip('password-reset email', 'this server has no email service configured (SMTP_* not set), so it correctly reports reset as unavailable. Reset email is NOT verified');
     else fail('password-reset request', `HTTP ${r.status} ${JSON.stringify(r.json)}`);
   } else skip('password-reset email', 'pass --reset-email=you@example.com to send a real one (needs your inbox to confirm)');
 

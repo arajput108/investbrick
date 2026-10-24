@@ -86,6 +86,8 @@ export function createAuthService({ db, passwords, mailer, config, now = () => D
 
     /** Always resolves the same way whether or not the email exists. */
     async requestReset({ email }) {
+      // Decided before looking at the email, so the answer reveals nothing about which accounts exist.
+      if (mailer.available === false) { const e = new AuthError(503, 'Password reset by email is not available on this server right now. Please contact the site owner.'); e.code = 'EMAIL_UNAVAILABLE'; throw e; }
       email = normalizeEmail(email);
       if (validateEmail(email)) return;
       const u = (await db.query('select id,email,display_name from users where email=$1', [email])).rows[0];

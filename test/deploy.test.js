@@ -114,13 +114,13 @@ for (const kind of backends) describe(`deploy readiness on ${kind}`, () => {
     S.market.st.prices.RELIANCE = 900;
     let aRuns = 0, bRuns = 0;
     const wrap = (cnt) => ({ runMatching: async () => { cnt(); return S.portfolio.runMatching(); } });
-    const a = createMatcher({ db, service: wrap(() => aRuns++), intervalMs: 5000, leaseMs: 400, instance: 'A' });
-    const b = createMatcher({ db, service: wrap(() => bRuns++), intervalMs: 5000, leaseMs: 400, instance: 'B' });
+    const a = createMatcher({ db, service: wrap(() => aRuns++), intervalMs: 5000, leaseMs: 1500, instance: 'A' });
+    const b = createMatcher({ db, service: wrap(() => bRuns++), intervalMs: 5000, leaseMs: 1500, instance: 'B' });
     await a.tick({ force: true }); await b.tick({ force: true });
     assert.equal(a.status().leader, true); assert.equal(b.status().leader, false);
     assert.equal(aRuns, 1); assert.equal(bRuns, 0);
     assert.equal((await db.query('select status from orders where id=$1', [o.orderId])).rows[0].status, 'filled');
-    await sleep(500);                                       // A "crashes": no more ticks, no stop(), lease lapses
+    await sleep(1700);                                      // A "crashes": no more ticks, no stop(), lease lapses
     await b.tick({ force: true });
     assert.equal(b.status().leader, true); assert.equal(bRuns, 1);
     await a.tick({ force: true });                          // A "restarts" while B is leader: must stay standby
@@ -204,4 +204,23 @@ describe('real server process: restart, graceful shutdown, refusing bad producti
     const line = p.out.find((l) => l.msg === 'could not start accounts'); assert.match(line.err.message, /pending/);
     p.child.kill('SIGTERM'); await p.exited; rmSync(dir, { recursive: true, force: true });
   });
+});
+
+test('internal wake-and-match endpoint: absent without a secret, 401 without/with a wrong bearer, runs one pass with the right one, returns counts only', async () => {
+  const { createInternalRouter } = await import('../server/portfolio/internal.js');
+  const express = (await import('express')).default;
+  let passes = 0;
+  const mk = (secret) => { const app = express(); app.use('/api/internal', createInternalRouter({ secret, runPass: async () => { passes++; return { candidates: 2, filled: 1, rejected: 0, expired: 0, deferred: 1, errors: 0, secretUserData: 'must-not-appear' }; } })); return app.listen(0); };
+  const post = (s, h = {}) => fetch(`http://127.0.0.1:${s.address().port}/api/internal/match`, { method: 'POST', headers: h });
+  const off = mk(''), on = mk('s3cret-value');
+  try {
+    assert.equal((await post(off, { authorization: 'Bearer s3cret-value' })).status, 404);
+    assert.equal((await post(on)).status, 401);
+    assert.equal((await post(on, { authorization: 'Bearer wrong' })).status, 401);
+    assert.equal(passes, 0);
+    const ok = await post(on, { authorization: 'Bearer s3cret-value' });
+    assert.equal(ok.status, 200); const j = await ok.json();
+    assert.deepEqual(j, { ok: true, candidates: 2, filled: 1, rejected: 0, expired: 0, deferred: 1, errors: 0 });
+    assert.equal(passes, 1);
+  } finally { for (const s of [off, on]) { s.close(); s.closeAllConnections(); } }
 });

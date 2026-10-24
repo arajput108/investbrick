@@ -10,7 +10,7 @@ import { log as rootLog } from './logger.js';
 
 const pub = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
-export function createApp({ market, config, auth = null, portfolioRouter = null, health = null, ready = null, log = rootLog }) {
+export function createApp({ market, config, auth = null, portfolioRouter = null, internalRouter = null, health = null, ready = null, log = rootLog }) {
   const app = express();
   app.disable('x-powered-by');
   if (config.trustProxy) app.set('trust proxy', config.trustProxy);
@@ -79,6 +79,7 @@ export function createApp({ market, config, auth = null, portfolioRouter = null,
   });
   // ---- accounts (Phase 2) ----
   if (auth) api.use('/auth', auth.router);
+  if (internalRouter) api.use('/internal', internalRouter);
   if (auth && portfolioRouter) api.use('/portfolio', portfolioRouter);
   else {
     api.get('/auth/me', (_req, res) => res.json({ user: null, enabled: false }));

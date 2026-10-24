@@ -13,6 +13,7 @@ import { createAuth } from './auth/routes.js';
 import { createPortfolioService } from './portfolio/service.js';
 import { createPortfolioRouter } from './portfolio/routes.js';
 import { createMatcher } from './portfolio/matcher.js';
+import { createInternalRouter } from './portfolio/internal.js';
 
 // A crash we cannot explain is logged, then the process exits so the platform restarts it cleanly. We never limp on in an unknown state.
 process.on('unhandledRejection', (e) => { log.error('unhandled promise rejection: exiting', e instanceof Error ? e : { reason: String(e) }); setTimeout(() => process.exit(1), 100); });
@@ -45,7 +46,7 @@ if (config.db.url || config.db.driver === 'pglite') {
     if (config.matcher.enabled) matcher = createMatcher({ db, service: portfolio, intervalMs: config.matcher.intervalSec * 1000, idleRecheckMs: config.matcher.idleRecheckSec * 1000 });
     service = createAuthService({
       db, config, onUserCreated: (t, userId) => portfolio.ensurePortfolio(t, userId), passwords: createPasswords(config.auth.argon),
-      mailer: createMailer({ provider: config.email.provider, from: config.email.from, smtp: config.email.smtp, isProd: config.isProd }),
+      mailer: createMailer({ provider: config.email.provider, from: config.email.from, smtp: config.email.smtp, brevo: { apiKey: config.email.brevoApiKey }, isProd: config.isProd }),
     });
     auth = createAuth({ service, config });
     portfolioRouter = createPortfolioRouter({ service: portfolio, auth, config });
@@ -68,7 +69,8 @@ const ready = async () => {
   return { ok: Object.values(checks).every((v) => v === 'ok' || v === 'not configured'), checks };
 };
 
-const server = createApp({ market, config, auth, portfolioRouter, health, ready }).listen(config.port, () => {
+const server = createApp({ market, config, auth, portfolioRouter, health, ready,
+  internalRouter: db && config.cronSecret ? createInternalRouter({ secret: config.cronSecret, runPass: () => (matcher ? matcher.tick({ force: true }) : portfolio.runMatching()) }) : null }).listen(config.port, () => {
   log.info('listening', { port: config.port, env: config.nodeEnv, accounts: !!auth });
   if (matcher) { matcher.start(); log.info('background limit-order matcher started', { everySec: config.matcher.intervalSec, idleRecheckSec: config.matcher.idleRecheckSec }); }
   else if (portfolio) log.warn('MATCHER_ENABLED=false: limit orders only fill when their owner opens the app.');

@@ -1,12 +1,11 @@
-# Render Blueprint: one always-on web service. Create it from the Render dashboard: New > Blueprint > pick your repo.
+# Render Blueprint: one web service (free plan: US$0, sleeps when idle). Create it from the Render dashboard: New > Blueprint > pick your repo.
 # Secrets are NOT stored here (sync: false means Render asks you for them in the dashboard).
 services:
   - type: web
     name: investbrick
     runtime: node
-    plan: starter                 # always-on (~US$7/month; confirm on render.com/pricing). The free plan sleeps, which would stop limit-order matching.
+    plan: free                    # US$0. The free plan SLEEPS after ~15 idle minutes, so the background matcher (and limit-order fills) pause while asleep. For reliable matching change this to `starter` (paid).
     region: singapore             # closest Render region to India; change if you prefer
-    numInstances: 1               # the matcher is safe with more (database lease), but 1 is simplest and cheapest
     buildCommand: npm ci --omit=dev
     startCommand: node server/index.js
     healthCheckPath: /healthz     # does not touch the database, so it never keeps Neon awake
@@ -15,26 +14,16 @@ services:
       - key: NODE_ENV
         value: production
       - key: NODE_VERSION
-        value: 22
+        value: "22"             # quoted: Render expects every env value to be text
       - key: TRUST_PROXY
         value: "1"
       - key: DB_DRIVER
         value: pg
-      - key: EMAIL_PROVIDER
-        value: smtp
+      # EMAIL_PROVIDER is not set: with SMTP_HOST present the server uses SMTP; without it, password reset reports itself as unavailable.
       - key: DATABASE_URL         # Neon connection string (looks like postgresql://...neon.tech/...?sslmode=require)
         sync: false
       - key: APP_URL              # your public address, e.g. https://investbrick.onrender.com or https://www.yourdomain.com
         sync: false
-      - key: EMAIL_FROM
-        sync: false
-      - key: SMTP_HOST
-        sync: false
-      - key: SMTP_PORT
-        value: "587"
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASS
-        sync: false
-      - key: COINGECKO_API_KEY    # free "Demo" key from coingecko.com (optional but recommended)
-        sync: false
+      # OPTIONAL variables are deliberately not listed, so Render never insists on a value for them. Add them later in
+      # Render > your service > Environment (see README): SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM (password-reset email)
+      # BREVO_API_KEY (free, HTTPS email that works on the free plan), CRON_SECRET (scheduled wake-up) and COINGECKO_API_KEY (free crypto-price key). Render's FREE plan blocks SMTP ports 25/465/587, so with Brevo use SMTP_PORT=2525.

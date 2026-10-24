@@ -17,7 +17,7 @@ export function createMatcher({ db, service, intervalMs = 15000, idleRecheckMs =
     const r = await db.query(
       `insert into engine_leases (name, holder, expires_at, last_tick_at) values ('matcher', $1, now() + ($2 || ' milliseconds')::interval, now())
        on conflict (name) do update set holder = excluded.holder, expires_at = excluded.expires_at, last_tick_at = now()
-       where engine_leases.holder = $1 or engine_leases.expires_at < now() returning holder`, [instance, String(lease)]);
+       where engine_leases.holder = $1 or engine_leases.expires_at <= now() returning holder`, [instance, String(lease)]);
     return r.rows.length > 0;
   }
   const record = (startedAt, res, note) => db.query(
@@ -82,7 +82,7 @@ export function createMatcher({ db, service, intervalMs = 15000, idleRecheckMs =
   async function stop() {
     state.stopped = true; clearTimeout(state.timer);
     await state.inTick?.catch(() => {});
-    await db.query("update engine_leases set expires_at = now() where name='matcher' and holder=$1", [instance]).catch(() => {});
+    await db.query("update engine_leases set expires_at = now() - interval '1 second' where name='matcher' and holder=$1", [instance]).catch(() => {});
   }
   /** Liveness of the loop itself (not of the database): false if the loop has stopped ticking. */
   const alive = () => state.stopped ? false : now() - state.lastLoopAt < Math.max(intervalMs * 10, 120000);

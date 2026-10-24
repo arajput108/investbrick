@@ -13,6 +13,9 @@ test('production config: accepts a complete setup, rejects every unsafe default'
   assert.ok(productionProblems({ ...good, appUrl: 'http://x.com' }).some((p) => /APP_URL/.test(p)));
   assert.ok(productionProblems({ ...good, email: { provider: 'console', smtp: {} } }).some((p) => /EMAIL_PROVIDER/.test(p)));
   assert.ok(productionProblems({ ...good, email: { provider: 'smtp', smtp: { host: '' } } }).some((p) => /SMTP_HOST/.test(p)));
+  assert.deepEqual(productionProblems({ ...good, email: { provider: 'none', smtp: {} } }), []);   // running without email is allowed, explicitly
+  assert.deepEqual(productionProblems({ ...good, email: { provider: 'brevo-api', brevoApiKey: 'k', smtp: {} } }), []);
+  assert.ok(productionProblems({ ...good, email: { provider: 'brevo-api', brevoApiKey: '', smtp: {} } }).some((p) => /BREVO_API_KEY/.test(p)));
   assert.ok(productionProblems({ ...good, trustProxy: 0 }).some((p) => /TRUST_PROXY/.test(p)));
 });
 test('dev-only drivers refuse to run in production', async () => {

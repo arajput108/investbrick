@@ -1,17 +1,7 @@
-
-# Environment variables and secrets
+node_modules/
 .env
 .env.*
 !.env.example
 !.env.sample
-
-# Neon local configuration
+*.log
 .neon
-
-# Dependencies and generated files
-node_modules/
-dist/
-coverage/
-
-# Operating system files
-.DS_Store
