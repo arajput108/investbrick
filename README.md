@@ -60,7 +60,7 @@ npm run dev:local     # on-disk Postgres (PGlite) in .data/pglite; reset links p
 ```
 ### Option B: Neon (what you will deploy with)
 1. Sign up at neon.com (free plan, no card needed) and create a project (pick the region nearest your users, e.g. Mumbai/Singapore if offered).
-2. Open **Connect**, choose the **pooled** connection string, copy it into `.env` as `DATABASE_URL`. If you get a `channel_binding` error, delete `&channel_binding=require` from the string.
+2. Open **Connect**, switch **Connection pooling off** (the **direct** string, host without `-pooler`), copy it into `.env` as `DATABASE_URL`. Use the direct string: the app sets `statement_timeout` as a connection startup parameter, which PgBouncer-style poolers (Neon's `-pooler` hosts) may reject with "unsupported startup parameter". Only the direct string was tested; the app logs a warning if it sees a `-pooler` host. If you get a `channel_binding` error, delete `&channel_binding=require` from the string.
 3. `npm run migrate` (also runs automatically at server start). Tables created: `users`, `sessions`, `password_resets`, `schema_migrations`.
 4. `npm start`. The log should say `accounts ON`.
 

@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { log } from '../logger.js';
 // Tiny database adapter so the app runs on PostgreSQL (Neon / any Postgres) in production
 // and on PGlite (real Postgres compiled to WASM) for zero-setup local dev and automated tests.
@@ -9,6 +10,8 @@ export async function createDb({ driver = 'pg', url = '', pgliteDir = '', isProd
     let PGlite;
     try { ({ PGlite } = await import('@electric-sql/pglite')); }
     catch { throw new Error('PGlite is not installed. Run `npm install` (it is a dev dependency).'); }
+    // PGlite does not create missing parent folders, so a fresh checkout (no .data/ yet) failed with ENOENT.
+    if (pgliteDir) fs.mkdirSync(pgliteDir, { recursive: true });
     const pg = pgliteDir ? new PGlite(pgliteDir) : new PGlite();
     await pg.waitReady;
     const wrap = (c) => ({ query: async (sql, params = []) => ({ rows: (await c.query(sql, params)).rows }), exec: (sql) => c.exec(sql) });
