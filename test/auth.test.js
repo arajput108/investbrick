@@ -371,3 +371,86 @@ test('lockout cannot be dodged by parallel guesses: the failed-login counter is 
   assert.ok(row.locked_until && new Date(row.locked_until) > new Date(), 'account must be locked after 8 parallel failures with a limit of 5');
   await assert.rejects(service.login({ email, password: GOOD }));            // even the right password is refused while locked
 });
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Forgot-password hardening: timing, flooding, superseded links, provider failures.
+// ---------------------------------------------------------------------------------------------------------------------------
+function appWithMailer(mailer, { authCfg = {} } = {}) {
+  const config = { isProd: false, trustProxy: 0, appUrl: 'https://investbrick.example', auth: authCfg, rateLimits: { loginIp: 1000, loginAcct: 1000, register: 1000, forgot: 1000, reset: 1000, change: 1000 } };
+  const service = createAuthService({ db, config, mailer, passwords: createPasswords({ memoryCost: 1024, timeCost: 1 }) });
+  const server = createApp({ market, config, auth: createAuth({ service, config }) }).listen(0);
+  return { service, base: `http://127.0.0.1:${server.address().port}`, close: () => { server.close(); server.closeAllConnections(); } };
+}
+
+test('reset email is sent AFTER the response: a slow email provider cannot reveal whether an account exists', async () => {
+  // The provider blocks on a gate we control. If the endpoint waited for it, the "known account" request below would hang.
+  let release; const gate = new Promise((r) => { release = r; }); const delivered = [];
+  const mailer = createMailer({ provider: 'smtp', from: 'IB <a@b.c>', transport: { sendMail: async (m) => { await gate; delivered.push(m); } } });
+  const a = appWithMailer(mailer); const email = uniq(); await reg(client(a.base), { email });
+  try {
+    const known = await client(a.base).api('POST', '/api/auth/forgot-password', { email });       // returns although the provider is still blocked
+    const unknown = await client(a.base).api('POST', '/api/auth/forgot-password', { email: uniq() });
+    assert.equal(known.status, 200); assert.deepEqual(known.json, unknown.json);
+    assert.equal(delivered.length, 0, 'the response must not wait for the email provider');
+    release(); await a.service.flushMail();
+    assert.equal(delivered.length, 1); assert.equal(delivered[0].to, email);
+  } finally { release(); a.close(); }
+});
+
+test('an email provider failure changes nothing the user can see, is logged, and never crashes the server', async () => {
+  const mailer = createMailer({ provider: 'smtp', from: 'IB <a@b.c>', transport: { sendMail: async () => { throw new Error('provider down: SECRET-KEY-IN-ERROR'); } } });
+  const a = appWithMailer(mailer); const email = uniq(); await reg(client(a.base), { email });
+  try {
+    const known = await client(a.base).api('POST', '/api/auth/forgot-password', { email });
+    const unknown = await client(a.base).api('POST', '/api/auth/forgot-password', { email: uniq() });
+    assert.equal(known.status, 200); assert.deepEqual(known.json, unknown.json);
+    await a.service.flushMail();                                                                  // settles without throwing
+    assert.equal((await client(a.base).api('GET', '/api/auth/me')).status, 200);                  // server still healthy
+    assert.ok(!JSON.stringify(known.json).includes('SECRET'));
+  } finally { a.close(); }
+});
+
+test('mail-bombing guard: at most 3 reset emails per account per hour by default, and the caller cannot tell', async () => {
+  const a = makeApp(); const email = uniq(); await reg(client(a.base), { email });
+  for (let i = 0; i < 3; i++) await resetToken(a, email);                      // helper backdates the previous request by 5 minutes each time
+  sent.length = 0;
+  await db.query("update password_resets set created_at = now() - interval '5 minutes' where user_id=(select id from users where email=$1)", [email]);
+  const fourth = await client(a.base).api('POST', '/api/auth/forgot-password', { email });
+  const unknown = await client(a.base).api('POST', '/api/auth/forgot-password', { email: uniq() });
+  await a.service.flushMail();
+  assert.equal(fourth.status, 200); assert.deepEqual(fourth.json, unknown.json);
+  assert.equal(sent.length, 0, 'the fourth request in an hour must not send an email');
+  assert.equal((await db.query('select count(*)::int as n from password_resets where user_id=(select id from users where email=$1)', [email])).rows[0].n, 3);
+  a.close();
+});
+
+test('the hourly cap is configurable and the cooldown still applies independently', async () => {
+  const a = makeApp({ authCfg: { resetCooldownSec: 0, resetMaxPerHour: 2 } }); const email = uniq(); await reg(client(a.base), { email });
+  const answers = [];
+  for (let i = 0; i < 5; i++) answers.push((await client(a.base).api('POST', '/api/auth/forgot-password', { email })).json);
+  await a.service.flushMail();
+  assert.equal(sent.length, 2);
+  assert.ok(answers.every((x) => JSON.stringify(x) === JSON.stringify(answers[0])));
+  a.close();
+});
+
+test('only the newest reset link works: requesting a new one invalidates earlier unused links', async () => {
+  const a = makeApp(); const email = uniq(); await reg(client(a.base), { email });
+  const first = await resetToken(a, email);
+  const second = await resetToken(a, email);
+  assert.notEqual(first, second);
+  assert.equal((await client(a.base).api('POST', '/api/auth/reset-password', { token: first, password: 'Brand-New-Passw0rd!' })).status, 400);
+  assert.equal((await client(a.base).api('POST', '/api/auth/reset-password', { token: second, password: 'Brand-New-Passw0rd!' })).status, 200);
+  a.close();
+});
+
+test('reset tokens are never stored or logged in clear text, and the database holds only 64-char hashes', async () => {
+  const a = makeApp(); const email = uniq(); await reg(client(a.base), { email });
+  const token = await resetToken(a, email);
+  const rows = (await db.query('select token_hash from password_resets where user_id=(select id from users where email=$1)', [email])).rows;
+  assert.ok(rows.length >= 1);
+  for (const r of rows) { assert.match(r.token_hash, /^[0-9a-f]{64}$/); assert.notEqual(r.token_hash, token); }
+  const any = (await db.query("select count(*)::int as n from password_resets where token_hash = $1", [token])).rows[0].n;
+  assert.equal(any, 0);
+  a.close();
+});

@@ -66,9 +66,20 @@ npm run dev:local     # on-disk Postgres (PGlite) in .data/pglite; reset links p
 
 Free-tier notes (check neon.com/pricing, it changes): the free plan has a small storage and compute allowance and scales to zero after idle time, so the first request after a pause can take a second or two. Plenty for a college project.
 
-### Password-reset email
-Reset emails need an SMTP service. In development, `EMAIL_PROVIDER=console` prints the link in the terminal. For real email set `EMAIL_PROVIDER=smtp` plus `SMTP_*` and `EMAIL_FROM`:
-- **Brevo** (free ~300 emails/day): create an account, SMTP & API > SMTP keys, host `smtp-relay.brevo.com`, port 587, your login and the SMTP key. Verify your sender address.
+### Password-reset email ("Forgot password?")
+**How it works.** The login page links to `/forgot-password`. The user enters an email; the server always answers with the same message whether or not an account exists, and (only for real accounts) emails a link to `APP_URL/reset-password#token=...`. The token is 256 bits of randomness, stored **only as a SHA-256 hash**, valid for 60 minutes, usable **once**, and replaced by any newer link. Setting a new password signs the user out everywhere. Limits: 5 requests/hour per IP, 1 email/minute and 3 emails/hour per account (`RESET_MAX_PER_HOUR`). Emails are sent in the background so response time never reveals whether an account exists.
+
+**Configure it (recommended, free: Brevo over HTTPS, works on Render's free plan):**
+1. Create a Brevo account (free plan) and verify a sender address under **Senders & IP > Senders**.
+2. **SMTP & API > API keys**: generate an API key (this is *not* the SMTP key).
+3. Set these as environment variables (see `.env.example`; on Render use the service's **Environment** tab, never `render.yaml`):
+   `EMAIL_PROVIDER=brevo-api`, `BREVO_API_KEY=<your key>`, `EMAIL_FROM=InvestBrick <your-verified-sender@example.com>`, `APP_URL=https://your-real-address`.
+4. **Check it yourself before relying on it.** The automated tests use a mock of Brevo's API, so they prove the request format and the flow, **not that Brevo accepts your key and sender**. Request a reset for your own account, confirm the email arrives (check spam), the link opens, the new password works, and the link fails the second time. If it does not arrive, look for `password reset email failed` in the logs: `HTTP 401` = wrong API key, `HTTP 400` = sender not verified. (The user always sees the same generic message either way, by design.)
+
+In development, `EMAIL_PROVIDER=console` (the default outside production) prints the link in the terminal instead of sending.
+
+**Other providers (SMTP).** Set `EMAIL_PROVIDER=smtp` plus `SMTP_*` and `EMAIL_FROM`. Not usable on Render's free plan (SMTP ports are blocked):
+- **Brevo SMTP** (free ~300 emails/day): SMTP & API > SMTP keys, host `smtp-relay.brevo.com`, port 587, your login and the SMTP key. Verify your sender address.
 - **Resend**: host `smtp.resend.com`, port 465 with `SMTP_SECURE=true`, user `resend`, password = API key. You must verify a domain you own to email anyone except yourself.
 - **Gmail** (testing only): enable 2-step verification, create an App Password, host `smtp.gmail.com`, port 587.
 Without SMTP settings the production server still starts (`EMAIL_PROVIDER=none` is chosen automatically and a warning is logged): registration and login work, and "forgot password" answers **HTTP 503 "Password reset by email is not available on this server right now"**. It never pretends to send an email. **Email sending itself could not be tested from the build sandbox (no network)**: send yourself a reset link once after configuring.
@@ -80,8 +91,9 @@ Without SMTP settings the production server still starts (`EMAIL_PROVIDER=none` 
 | Stolen/guessed session | 256-bit random token in an `HttpOnly`, `SameSite=Lax` cookie (`Secure` + `__Host-` prefix in production), invisible to page JavaScript; 30-day max life, 7-day idle timeout; deleted on logout; all sessions revoked on password reset |
 | CSRF | SameSite cookie + JSON-only bodies + Origin / Fetch-Metadata checks on every state-changing request |
 | Brute force | Per-IP and per-IP+email rate limits (429), plus account lockout after 10 failures; identical error for wrong password and unknown email, with equalised timing |
-| Email enumeration on reset | Same response whether or not the account exists; mail throttled to one per minute per account |
-| Poisoned reset links | Link host comes from `APP_URL`, never the request's Host header; token travels in the URL fragment (not sent to servers or in Referer) and works once, for 60 minutes |
+| Email enumeration on reset | Same response whether or not the account exists, and the email is sent after the response so timing does not reveal it (a few milliseconds of database work still differ; not measurable over the internet in practice, but not zero) |
+| Reset-email flooding | 5 requests/hour per IP, plus per account: 1 email/minute and 3 emails/hour (`RESET_MAX_PER_HOUR`) |
+| Poisoned reset links | Link host comes from `APP_URL`, never the request's Host header; token travels in the URL fragment (not sent to servers or in Referer), works once, for 60 minutes, and a newer link invalidates older unused ones |
 | Injection / XSS | Parameterised SQL only; user text is rendered with `textContent`; the session JSON embedded in the page is escaped; CSP and security headers via Helmet |
 | Weak passwords | 10 to 128 characters, common-password and email-name checks (server-enforced) |
 | Cross-account access | Identity comes only from the server-side session, never from a client-supplied id; browser-saved paper data is namespaced per account |
@@ -89,7 +101,7 @@ Without SMTP settings the production server still starts (`EMAIL_PROVIDER=none` 
 Known trade-offs: registering reveals whether an email is already used (needed without email verification; rate limited). Email verification and two-factor login are not built. Rate-limit counters live in memory, so run one instance, or move them to Redis/Postgres before scaling out.
 
 ### Tests
-`npm test` runs 32 tests (market data + accounts) against a real in-memory Postgres (PGlite), no network or Neon needed. They cover hashing, cookies, validation, duplicate/concurrent registration, lockout, rate limits, expiry, CSRF, enumeration, reset-token single use (including concurrent redemption), session revocation and data isolation.
+`npm test` runs 112 tests (market data, accounts, password reset, portfolio, trading engine, deployment checks) against an in-memory Postgres (PGlite), no network or Neon needed. The Brevo API is replaced by a mock, so the tests prove the request format and the reset flow, not that your real Brevo account delivers mail. They cover hashing, cookies, validation, duplicate/concurrent registration, lockout, rate limits, expiry, CSRF, enumeration, reset-token single use (including concurrent redemption), session revocation and data isolation.
 
 ## Phase 3: database-backed portfolios
 

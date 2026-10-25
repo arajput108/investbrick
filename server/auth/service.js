@@ -11,10 +11,20 @@ const publicUser = (r) => ({ id: r.id, email: r.email, name: r.display_name });
 
 export function createAuthService({ db, passwords, mailer, config, now = () => Date.now(), onUserCreated = null }) {
   const A = {
-    sessionDays: 30, idleDays: 7, resetMinutes: 60, resetCooldownSec: 60, maxFailedLogins: 10, lockMinutes: 15, touchEveryMs: 10 * 60e3,
+    sessionDays: 30, idleDays: 7, resetMinutes: 60, resetCooldownSec: 60, resetMaxPerHour: 3, maxFailedLogins: 10, lockMinutes: 15, touchEveryMs: 10 * 60e3,
     ...config.auth,
   };
   const at = (ms) => new Date(ms);
+
+  // Reset emails are sent after the HTTP response is decided, never inside it. If the request waited for the email provider,
+  // "account exists" (slow: a network call) and "no such account" (instant) would be told apart by response time alone.
+  const pendingMail = new Set();
+  function sendInBackground(message) {
+    const p = Promise.resolve().then(() => mailer.send(message))
+      .catch((e) => log.error('password reset email failed', e))
+      .finally(() => pendingMail.delete(p));
+    pendingMail.add(p);
+  }
 
   async function createSession(client, userId, meta) {
     const token = newToken(), t = now();
@@ -95,15 +105,24 @@ export function createAuthService({ db, passwords, mailer, config, now = () => D
       if (validateEmail(email)) return;
       const u = (await db.query('select id,email,display_name from users where email=$1', [email])).rows[0];
       if (!u) return;
-      const last = (await db.query('select created_at from password_resets where user_id=$1 order by created_at desc limit 1', [u.id])).rows[0];
-      if (last && now() - new Date(last.created_at).getTime() < A.resetCooldownSec * 1000) return; // throttle mail bombing
-      const token = newToken(), t = now();
-      await db.query('insert into password_resets(token_hash,user_id,created_at,expires_at) values ($1,$2,$3,$4)', [hashToken(token), u.id, at(t), at(t + A.resetMinutes * 60e3)]);
+      // Throttle mail bombing: a short cooldown AND an hourly cap per account, so a victim's inbox cannot be flooded even from many IPs.
+      const t = now();
+      const recent = (await db.query('select count(*)::int as n, max(created_at) as last from password_resets where user_id=$1 and created_at > $2', [u.id, at(t - 3600e3)])).rows[0];
+      if (recent.last && t - new Date(recent.last).getTime() < A.resetCooldownSec * 1000) return;
+      if (recent.n >= A.resetMaxPerHour) return;
+      const token = newToken();
+      await db.tx(async (tx) => {
+        // Only the newest link works: earlier unused links are expired the moment a new one is issued.
+        await tx.query('update password_resets set expires_at=$2 where user_id=$1 and used_at is null and expires_at > $2', [u.id, at(t)]);
+        await tx.query('insert into password_resets(token_hash,user_id,created_at,expires_at) values ($1,$2,$3,$4)', [hashToken(token), u.id, at(t), at(t + A.resetMinutes * 60e3)]);
+      });
       // The link host comes from configuration, never from the request's Host header (prevents poisoned reset links).
       const link = `${config.appUrl}/reset-password#token=${token}`;
-      try { await mailer.send({ to: u.email, ...resetEmail({ name: u.display_name, link, minutes: A.resetMinutes }) }); }
-      catch (e) { log.error('password reset email failed', e); }
+      sendInBackground({ to: u.email, ...resetEmail({ name: u.display_name, link, minutes: A.resetMinutes }) });
     },
+
+    /** Resolves when every reset email handed to the provider has finished (success or failure). Used by tests and graceful shutdown. */
+    async flushMail() { await Promise.allSettled([...pendingMail]); },
 
     async resetPassword({ token, password }) {
       const bad = new AuthError(400, 'This reset link is invalid or has expired. Request a new one.');
