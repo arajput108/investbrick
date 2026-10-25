@@ -34,6 +34,11 @@ const market = createMarketService({
 let auth = null, db = null, service = null, portfolioRouter = null, portfolio = null, matcher = null;
 if (config.db.url || config.db.driver === 'pglite') {
   try {
+    if (/@[^/?]*-pooler[.]/i.test(config.db.url)) {
+      // The database adapter sets statement_timeout / idle_in_transaction_session_timeout as connection startup parameters, which
+      // PgBouncer-style poolers (such as Neon's "-pooler" hosts) may reject with "unsupported startup parameter".
+      log.warn('DATABASE_URL is a pooled Neon connection (host contains "-pooler"). If startup fails with "unsupported startup parameter", use the direct (non-pooled) connection string instead. See README.');
+    }
     db = await createDb({ driver: config.db.driver, url: config.db.url, pgliteDir: config.db.pgliteDir, isProd: config.isProd, poolMax: config.db.poolMax, statementTimeoutMs: config.db.statementTimeoutMs });
     let applied = [];
     if (config.migrateOnStart) applied = await migrate(db, { log: (m) => log.info('migration ' + m) });

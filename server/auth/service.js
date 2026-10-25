@@ -151,6 +151,8 @@ export function createAuthService({ db, passwords, mailer, config, now = () => D
       await db.tx(async (t) => {
         await t.query('update users set password_hash=$2, password_changed_at=$3, updated_at=$3 where id=$1', [userId, hash, at(now())]);
         await t.query('delete from sessions where user_id=$1 and token_hash <> $2', [userId, keepToken ? hashToken(keepToken) : '']);
+        // A reset link already sitting in an inbox must not be able to override the password the user just chose on purpose.
+        await t.query('update password_resets set expires_at=$2 where user_id=$1 and used_at is null and expires_at > $2', [userId, at(now())]);
       });
     },
 

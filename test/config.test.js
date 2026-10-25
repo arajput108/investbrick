@@ -32,3 +32,15 @@ test('password and email rules', () => {
   assert.equal(validateEmail('a.b+c@sub.example.co.in'), null);
   for (const bad of ['', 'a@b', 'a b@c.com', '@x.com', 'a@@b.com', 'a@b..com']) assert.ok(validateEmail(bad), bad);
 });
+
+test('local on-disk database (npm run dev:local) starts on a fresh checkout and keeps its data between runs', async () => {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-pglite-'));
+  const dir = path.join(root, '.data', 'pglite');                       // neither .data nor pglite exists yet, like a fresh clone
+  try {
+    const a = await createDb({ driver: 'pglite', pgliteDir: dir });
+    await a.exec('create table t(v text)'); await a.query('insert into t values ($1)', ['kept']); await a.close();
+    const b = await createDb({ driver: 'pglite', pgliteDir: dir });
+    assert.deepEqual((await b.query('select v from t')).rows, [{ v: 'kept' }]); await b.close();
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
