@@ -42,6 +42,7 @@ export const config = {
   auth: {
     argon: { memoryCost: int(env.ARGON_MEMORY_KIB, 19456), timeCost: int(env.ARGON_TIME_COST, 2), parallelism: 1 },
     sessionDays: int(env.SESSION_DAYS, 30), idleDays: int(env.SESSION_IDLE_DAYS, 7),
+    resetMaxPerHour: Math.min(Math.max(int(env.RESET_MAX_PER_HOUR, 3), 1), 20),   // reset emails per account per hour (mail-bombing guard)
   },
 };
 
