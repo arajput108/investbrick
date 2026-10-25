@@ -28,7 +28,7 @@ export function createMailer({ provider = 'console', from, smtp = {}, isProd = f
         const m = /^\s*(?:"?([^"<]*?)"?\s*)?<([^>]+)>\s*$/.exec(from || '');
         const sender = m ? { name: (m[1] || '').trim() || undefined, email: m[2].trim() } : { email: String(from || '').trim() };
         const res = await fetchImpl(brevo.url || 'https://api.brevo.com/v3/smtp/email', {
-          method: 'POST', signal: AbortSignal.timeout(15000),
+          method: 'POST', signal: AbortSignal.timeout(brevo.timeoutMs || 15000),
           headers: { 'api-key': brevo.apiKey, 'content-type': 'application/json', accept: 'application/json' },
           body: JSON.stringify({ sender, to: [{ email: to }], subject, htmlContent: html, textContent: text }),
         });

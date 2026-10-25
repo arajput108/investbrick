@@ -454,3 +454,14 @@ test('reset tokens are never stored or logged in clear text, and the database ho
   assert.equal(any, 0);
   a.close();
 });
+
+test('changing your password invalidates reset links already sent', async () => {
+  const a = makeApp(); const email = uniq(); const c = client(a.base); await reg(c, { email });
+  const token = await resetToken(a, email);                                  // a link is sitting in the inbox
+  const NEW = 'Changed-On-Purpose-42';
+  assert.equal((await c.api('POST', '/api/auth/change-password', { currentPassword: GOOD, newPassword: NEW })).status, 200);
+  const stale = await client(a.base).api('POST', '/api/auth/reset-password', { token, password: 'Attacker-Chosen-Pass-9' });
+  assert.equal(stale.status, 400);                                           // the old link no longer works
+  assert.equal((await client(a.base).api('POST', '/api/auth/login', { email, password: NEW })).status, 200);   // the chosen password stands
+  a.close();
+});
