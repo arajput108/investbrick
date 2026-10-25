@@ -19,7 +19,8 @@ services:
         value: "1"
       - key: DB_DRIVER
         value: pg
-      # EMAIL_PROVIDER is not set: with SMTP_HOST present the server uses SMTP; without it, password reset reports itself as unavailable.
+      # EMAIL_PROVIDER is not set: with BREVO_API_KEY present the server uses the Brevo API (HTTPS), else SMTP if SMTP_HOST is present; with neither, password reset reports itself as unavailable.
+      # Never put API keys in this file: add BREVO_API_KEY and EMAIL_FROM in the Render dashboard (Environment tab). See .env.example.
       - key: DATABASE_URL         # Neon connection string (looks like postgresql://...neon.tech/...?sslmode=require)
         sync: false
       - key: APP_URL              # your public address, e.g. https://investbrick.onrender.com or https://www.yourdomain.com

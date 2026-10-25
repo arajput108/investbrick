@@ -49,6 +49,9 @@ if (config.db.url || config.db.driver === 'pglite') {
       mailer: createMailer({ provider: config.email.provider, from: config.email.from, smtp: config.email.smtp, brevo: { apiKey: config.email.brevoApiKey }, isProd: config.isProd }),
     });
     auth = createAuth({ service, config });
+    if (['brevo-api', 'smtp'].includes(config.email.provider) && /@localhost>?\s*$/.test(config.email.from)) {
+      log.warn('EMAIL_FROM is not set (still the placeholder sender). Reset emails will be refused by the email provider until it is a verified sender address.');
+    }
     portfolioRouter = createPortfolioRouter({ service: portfolio, auth, config });
     log.info('database connected', { driver: db.kind, migrationsApplied: applied.length });
   } catch (e) {
@@ -93,6 +96,7 @@ async function shutdown(sig) {
   try {
     await new Promise((r) => { server.close(r); server.closeIdleConnections?.(); });   // stop accepting; let in-flight requests finish
     await matcher?.stop();                                                             // finishes a running pass, releases the lease so a new instance takes over at once
+    await service?.flushMail?.();                                                      // let reset emails already handed to the provider finish
     await db?.close();
     log.info('shutdown complete');
     process.exit(0);
