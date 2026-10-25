@@ -1,14 +1,13 @@
-node_modules
+cat > .gitignore <<'EOF'
+node_modules/
 .env
-*.log
-.neon
-.env.local
-
-backups/
-*.dump
-
-# local on-disk database from `npm run dev:local` (contains accounts and password hashes): never commit
-.data/
-# any env file (.env.production, .env.development ...) but keep the safe template
 .env.*
 !.env.example
+.data/
+*.log
+.DS_Store
+.vscode/
+*.save
+*.pem
+*.key
+EOF
